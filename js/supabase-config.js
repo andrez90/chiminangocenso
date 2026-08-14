@@ -15,8 +15,8 @@
 // "service_role key" (esa sí es secreta y nunca debe ir en el frontend).
 // =====================================================================
 
-window.SUPABASE_URL = 'https://TU-PROYECTO.supabase.co';
-window.SUPABASE_ANON_KEY = 'TU-ANON-KEY-PUBLICA-AQUI';
+window.SUPABASE_URL = 'https://mrbdrluiuwrlzkfgorop.supabase.co';
+window.SUPABASE_ANON_KEY = 'sb_publishable_ZubGluyHdUcAb4GYgM50rg_ga5qEv79';
 
 // Dominio sintético usado para mapear teléfono -> correo interno, para
 // poder usar Supabase Auth (que requiere un correo) sin pedirle un
