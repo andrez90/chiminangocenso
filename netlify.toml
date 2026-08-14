@@ -1,0 +1,18 @@
+# Configuración de despliegue en Netlify — sitio estático, sin build step.
+# El "backend" es Supabase, accedido directamente desde el navegador.
+
+[build]
+  publish = "."
+  command = ""
+
+# Cabeceras de seguridad básicas para todas las rutas.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "geolocation=(), microphone=(), camera=(self)"
+
+# El SPA usa rutas basadas en # (hash), así que no hace falta un redirect
+# de "catch-all" para navegación del lado del servidor.
