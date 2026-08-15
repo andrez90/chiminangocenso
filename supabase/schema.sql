@@ -932,5 +932,12 @@ create policy miembros_hogar_delete on miembros_hogar
   );
 
 -- =====================================================================
+-- MIGRACIÓN v5 — cifras de referencia por torre (cuántos hogares/personas
+-- se esperan, para comparar contra lo ya censado).
+-- =====================================================================
+alter table torres add column if not exists hogares_esperados integer;
+alter table torres add column if not exists personas_esperadas integer;
+
+-- =====================================================================
 -- Fin del esquema. Sigue con seed.sql para cargar catálogo y bloques.
 -- =====================================================================

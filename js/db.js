@@ -79,6 +79,30 @@
       return data.user.id;
     },
 
+    pinAleatorio() {
+      return String(Math.floor(100000 + Math.random() * 900000));
+    },
+
+    // Crea varias cuentas de líder de una vez a partir de candidatos ya
+    // resueltos ({nombre, telefono, torreId}), generando un PIN nuevo para
+    // cada uno. No se detiene si una falla (ej. teléfono duplicado): la
+    // acumula en "errores" y sigue con las demás. El PIN no queda guardado
+    // en ningún lado más que en la respuesta — hay que entregarlo ahora.
+    async crearLideresDesdeCensoMaestro(candidatos) {
+      const creados = [];
+      const errores = [];
+      for (const c of candidatos) {
+        const pin = this.pinAleatorio();
+        try {
+          await this.crearLider({ nombre: c.nombre, telefono: c.telefono, pin, bloques: [], torres: [c.torreId] });
+          creados.push({ ...c, pin });
+        } catch (ex) {
+          errores.push({ ...c, error: ex.message || String(ex) });
+        }
+      }
+      return { creados, errores };
+    },
+
     // ---------------------------------------------------------------
     // Bloques / Torres
     // ---------------------------------------------------------------
@@ -119,6 +143,10 @@
     },
     async crearTorre({ id_bloque, id_agrupacion, letra_torre }) {
       const { error } = await client.from('torres').insert({ id: `${id_agrupacion}-${letra_torre}`, id_bloque, id_agrupacion, letra_torre });
+      if (error) throw error;
+    },
+    async actualizarTorre(id, cambios) {
+      const { error } = await client.from('torres').update(cambios).eq('id', id);
       if (error) throw error;
     },
 

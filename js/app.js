@@ -39,6 +39,7 @@
     const limpio = String(telefono || '').replace(/[^\d+]/g, '');
     return limpio ? `tel:${limpio}` : '';
   }
+  function normTelSimple(telefono) { return String(telefono || '').replace(/\D/g, ''); }
   // Enlace de llamada real (<a href="tel:">) para contextos que NO están
   // dentro de otro <a> (ej. celdas de tabla).
   function telLinkHTML(telefono) {
@@ -1278,9 +1279,10 @@
 
       <div class="card">
         <div class="card-header"><h2>Torres</h2><button class="btn btn-sm btn-secondary" id="btn-nueva-torre" type="button">+ Torre</button></div>
+        <p class="text-muted text-sm">"Esperados" son cifras de referencia (ej. del censo original) para comparar contra lo ya censado — no limitan cuántos hogares se pueden agregar.</p>
         <div class="table-scroll"><table class="data-table">
-          <thead><tr><th>Sector</th><th>Agrupación</th><th>Letra</th></tr></thead>
-          <tbody>${torres.map((t) => `<tr><td>${esc(t.id_bloque)}</td><td>${esc((agrupaciones.find((a) => a.id === t.id_agrupacion) || {}).numero || '—')}</td><td>${esc(t.letra_torre)}</td></tr>`).join('') || '<tr><td colspan="3" class="text-muted">Sin torres registradas todavía.</td></tr>'}</tbody>
+          <thead><tr><th>Sector</th><th>Agrupación</th><th>Letra</th><th>Hogares censados / esperados</th><th>Personas esperadas</th><th></th></tr></thead>
+          <tbody>${torres.map((t) => `<tr><td>${esc(t.id_bloque)}</td><td>${esc((agrupaciones.find((a) => a.id === t.id_agrupacion) || {}).numero || '—')}</td><td>${esc(t.letra_torre)}</td><td>${hogares.filter((h) => h.id_torre === t.letra_torre && h.id_agrupacion === t.id_agrupacion).length} / ${t.hogares_esperados ?? '—'}</td><td>${t.personas_esperadas ?? '—'}</td><td><button class="btn btn-sm btn-ghost" data-editar-torre="${esc(t.id)}" type="button">Editar cifras</button></td></tr>`).join('') || '<tr><td colspan="6" class="text-muted">Sin torres registradas todavía.</td></tr>'}</tbody>
         </table></div>
       </div>
 
@@ -1290,6 +1292,13 @@
           <thead><tr><th>Nombre</th><th>Teléfono</th><th>Torres</th><th>Sectores</th><th>Estado</th></tr></thead>
           <tbody>${lideres.map((l) => `<tr><td>${esc(l.nombre)}</td><td>${telLinkHTML(l.telefono)}</td><td>${(l.torres_permitidas || []).join(', ') || '—'}</td><td>${(l.bloques_permitidos || []).join(', ') || '—'}</td><td>${l.activo ? '<span class="badge badge-success">Activo</span>' : '<span class="badge badge-neutral">Inactivo</span>'}</td></tr>`).join('') || '<tr><td colspan="5" class="text-muted">Sin líderes registrados todavía.</td></tr>'}</tbody>
         </table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>Crear líderes del censo maestro</h2></div>
+        <p class="text-muted text-sm">Busca hogares marcados como líder (con su sector/agrupación/torre ya resueltos y teléfono conocido) que todavía no tienen cuenta de acceso, y te ofrece crearla con un PIN generado para cada uno.</p>
+        <button class="btn btn-secondary mt-4" id="btn-detectar-lideres" type="button">Detectar líderes pendientes de cuenta</button>
+        <div id="lideres-preview-region" class="mt-4"></div>
       </div>`;
 
     qs('#btn-nuevo-bloque', root).addEventListener('click', async () => {
@@ -1319,7 +1328,83 @@
       catch (ex) { toast(errorAmigable(ex), 'error'); }
     });
 
+    qsa('[data-editar-torre]', root).forEach((btn) => btn.addEventListener('click', async () => {
+      const torre = torres.find((t) => t.id === btn.dataset.editarTorre);
+      const hogaresEsperados = prompt('Hogares esperados en esta torre (deja vacío para quitarlo):', torre.hogares_esperados ?? '');
+      if (hogaresEsperados === null) return;
+      const personasEsperadas = prompt('Personas esperadas en esta torre (deja vacío para quitarlo):', torre.personas_esperadas ?? '');
+      if (personasEsperadas === null) return;
+      try {
+        await DB.actualizarTorre(torre.id, {
+          hogares_esperados: hogaresEsperados.trim() === '' ? null : Number(hogaresEsperados) || 0,
+          personas_esperadas: personasEsperadas.trim() === '' ? null : Number(personasEsperadas) || 0
+        });
+        toast('Actualizado', 'success'); router();
+      } catch (ex) { toast(errorAmigable(ex), 'error'); }
+    }));
+
     qs('#btn-nuevo-lider', root).addEventListener('click', () => abrirModalNuevoLider(torres, agrupaciones));
+
+    qs('#btn-detectar-lideres', root).addEventListener('click', () => {
+      const telefonosConCuenta = new Set(lideres.map((l) => normTelSimple(l.telefono)));
+      const candidatos = [];
+      const sinDatos = [];
+      hogares.filter((h) => h.es_lider).forEach((h) => {
+        const torreId = h.id_agrupacion && h.id_torre ? `${h.id_agrupacion}-${h.id_torre}` : null;
+        if (!torreId || !h.telefono) { sinDatos.push(h); return; }
+        if (telefonosConCuenta.has(normTelSimple(h.telefono))) return; // ya tiene cuenta
+        candidatos.push({ nombre: h.nombre_jefe_hogar || '(Sin nombre)', telefono: h.telefono, torreId });
+      });
+
+      const region = qs('#lideres-preview-region', root);
+      if (candidatos.length === 0 && sinDatos.length === 0) {
+        region.innerHTML = '<p class="text-muted text-sm">Todos los hogares marcados como líder ya tienen cuenta de acceso.</p>';
+        return;
+      }
+      region.innerHTML = `
+        ${candidatos.length === 0 ? '' : `
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Nombre</th><th>Teléfono</th><th>Torre</th></tr></thead>
+            <tbody>${candidatos.map((c) => `<tr><td>${esc(c.nombre)}</td><td>${esc(c.telefono)}</td><td>${esc(c.torreId)}</td></tr>`).join('')}</tbody>
+          </table>
+        </div>
+        <button class="btn btn-primary mt-4" id="btn-crear-lideres" type="button">Crear ${candidatos.length} cuenta${candidatos.length === 1 ? '' : 's'}</button>`}
+        ${sinDatos.length === 0 ? '' : `
+        <div class="section-title">Sin torre o sin teléfono — no se puede crear cuenta (${sinDatos.length})</div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Nombre</th><th>Sector</th><th>Torre</th><th>Teléfono</th></tr></thead>
+            <tbody>${sinDatos.map((h) => `<tr><td>${esc(h.nombre_jefe_hogar || '(Sin nombre)')}</td><td>${esc(h.id_bloque || '—')}</td><td>${esc(h.id_torre || '—')}</td><td>${esc(h.telefono || '—')}</td></tr>`).join('')}</tbody>
+          </table>
+        </div>`}`;
+
+      qs('#btn-crear-lideres', region)?.addEventListener('click', async () => {
+        const ok = await confirmar(`Se crearán ${candidatos.length} cuentas de líder con PIN generado automáticamente. Vas a necesitar copiar la lista de teléfono+PIN para entregársela — no se puede recuperar después. ¿Continuar?`, { textoOk: 'Crear cuentas' });
+        if (!ok) return;
+        try {
+          const { creados, errores } = await DB.crearLideresDesdeCensoMaestro(candidatos);
+          region.innerHTML = `
+            ${creados.length === 0 ? '' : `
+            <div class="section-title">Cuentas creadas — copia esta lista, el PIN no se puede volver a ver</div>
+            <div class="table-scroll">
+              <table class="data-table">
+                <thead><tr><th>Nombre</th><th>Teléfono</th><th>PIN</th><th>Torre</th></tr></thead>
+                <tbody>${creados.map((c) => `<tr><td>${esc(c.nombre)}</td><td>${esc(c.telefono)}</td><td><strong>${esc(c.pin)}</strong></td><td>${esc(c.torreId)}</td></tr>`).join('')}</tbody>
+              </table>
+            </div>`}
+            ${errores.length === 0 ? '' : `
+            <div class="section-title">Errores (${errores.length})</div>
+            <div class="table-scroll">
+              <table class="data-table">
+                <thead><tr><th>Nombre</th><th>Teléfono</th><th>Error</th></tr></thead>
+                <tbody>${errores.map((e) => `<tr><td>${esc(e.nombre)}</td><td>${esc(e.telefono)}</td><td>${esc(errorAmigable({ message: e.error }))}</td></tr>`).join('')}</tbody>
+              </table>
+            </div>`}`;
+          toast(`${creados.length} cuentas creadas.`, 'success');
+        } catch (ex) { toast(errorAmigable(ex), 'error'); }
+      });
+    });
 
     qs('#btn-sincronizar', root).addEventListener('click', () => {
       const resultado = DB.reconciliarCensoMaestro(hogares, window.SEED_HOGARES);
