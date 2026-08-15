@@ -125,25 +125,32 @@
 
   function esCoordinador() { return state.perfil && state.perfil.rol === 'coordinador'; }
   function misBloques() { return state.perfil ? (state.perfil.bloques_permitidos || []) : []; }
+  // Cada valor tiene el mismo formato que torres.id: "<id_bloque>-<numero_agrupacion>-<letra>"
+  // (ej. "3-1-A"), porque una letra de torre solo existe dentro de una
+  // agrupación y un sector específicos — no hay "Torre A" global.
   function misTorres() { return state.perfil ? (state.perfil.torres_permitidas || []) : []; }
-  function claveTorre(h) { return `${h.id_bloque}-${h.id_torre || ''}`; }
-  // Letra de torre "efectiva": usa id_torre si ya está corregido en la
-  // base de datos, o la detecta pegada al número del apto (ej. "3B02" ->
-  // "B") mientras no se haya corregido. Solo para MOSTRAR opciones — el
-  // permiso real (RLS) sigue dependiendo de que id_torre quede corregido
-  // de verdad con el botón de Administración.
-  const PATRON_TORRE = /^\d+([A-Za-z])/;
-  function torreEfectiva(h) {
-    if (h.id_torre) return h.id_torre.toUpperCase();
-    const m = PATRON_TORRE.exec(h.apartamento_unidad || '');
-    return m ? m[1].toUpperCase() : null;
-  }
+  function claveTorreHogar(h) { return `${h.id_agrupacion || ''}-${h.id_torre || ''}`; }
   function puedeVerHogar(h) {
-    return esCoordinador() || misBloques().includes(h.id_bloque) || misTorres().includes(claveTorre(h));
+    return esCoordinador() || misBloques().includes(h.id_bloque) || misTorres().includes(claveTorreHogar(h));
   }
-  // Bloques a los que un líder de torre tiene acceso (derivados de sus torres asignadas)
+  // Sectores a los que un líder de torre tiene acceso (derivados de sus torres asignadas)
   function misBloquesPorTorre() {
     return Array.from(new Set(misTorres().map((t) => t.split('-')[0])));
+  }
+  // Agrupaciones (ids completos "<bloque>-<numero>") a las que un líder de
+  // torre tiene acceso, opcionalmente limitado a un sector.
+  function misAgrupacionesPorTorre(idBloque) {
+    return Array.from(new Set(
+      misTorres()
+        .filter((t) => !idBloque || t.split('-')[0] === idBloque)
+        .map((t) => t.split('-').slice(0, 2).join('-'))
+    ));
+  }
+  // Letras de torre permitidas dentro de una agrupación específica.
+  function misLetrasPorAgrupacion(idAgrupacion) {
+    return misTorres()
+      .filter((t) => t.startsWith(`${idAgrupacion}-`))
+      .map((t) => t.slice(idAgrupacion.length + 1));
   }
 
   // =====================================================================
@@ -233,7 +240,7 @@
         ['#/reportes', 'Reportes']
       ];
     }
-    return [['#/censo', 'Censo de mi bloque']];
+    return [['#/censo', 'Censo de mi torre']];
   }
 
   function renderChrome(hashActivo) {
@@ -244,7 +251,7 @@
           <div class="brand"><span class="brand-badge" aria-hidden="true">🏠</span><span class="brand-text">Censo Albergue Chimi</span></div>
           <div class="user-box">
             <span>${esc(state.perfil.nombre)}</span>
-            <span class="rol-badge">${state.perfil.rol === 'coordinador' ? 'Coordinador' : 'Líder de bloque'}</span>
+            <span class="rol-badge">${state.perfil.rol === 'coordinador' ? 'Coordinador' : 'Líder de torre'}</span>
             <button class="btn-logout" id="btn-logout" type="button">Salir</button>
           </div>
         </header>
@@ -324,19 +331,19 @@
     root.innerHTML = `
       <h1>Panel del coordinador</h1>
       <div class="metrics-grid">
-        <div class="metric-card"><div class="metric-value">${hogares.length}</div><div class="metric-label">Hogares censados (de 202 esperados)</div></div>
+        <div class="metric-card"><div class="metric-value">${hogares.length}</div><div class="metric-label">Hogares censados (de 203 esperados)</div></div>
         <div class="metric-card"><div class="metric-value">${totalPersonas}</div><div class="metric-label">Personas registradas</div></div>
-        <div class="metric-card"><div class="metric-value">${bloquesConHogares.size}</div><div class="metric-label">Bloques con censo activo</div></div>
+        <div class="metric-card"><div class="metric-value">${bloquesConHogares.size}</div><div class="metric-label">Sectores con censo activo</div></div>
         <div class="metric-card"><div class="metric-value">${entregas.length}</div><div class="metric-label">Entregas recientes</div></div>
       </div>
 
       <div class="section-title">Posibles hogares repetidos</div>
       <div class="card">
         ${duplicados.length === 0
-          ? '<p class="text-muted">No se detectaron hogares repetidos (mismo bloque, apto y jefe de hogar).</p>'
+          ? '<p class="text-muted">No se detectaron hogares repetidos (mismo sector, apto y jefe de hogar).</p>'
           : `<div class="alert-list">${duplicados.map((grupo) => `
               <div class="alert-item warning">
-                <div><strong>${esc(grupo[0].nombre_jefe_hogar)}</strong><div class="text-sm text-muted">Bloque ${esc(grupo[0].id_bloque)} · Apto ${esc(grupo[0].apartamento_unidad || '—')} · ${grupo.length} registros iguales</div></div>
+                <div><strong>${esc(grupo[0].nombre_jefe_hogar)}</strong><div class="text-sm text-muted">Sector ${esc(grupo[0].id_bloque)} · Apto ${esc(grupo[0].apartamento_unidad || '—')} · ${grupo.length} registros iguales</div></div>
                 <a class="btn btn-sm btn-secondary" href="${rutaHogarEditar(grupo[0].id)}">Revisar</a>
               </div>`).join('')}</div>`}
       </div>
@@ -349,7 +356,7 @@
               <div class="alert-item">
                 <div>
                   <strong>${esc(n.hogares?.nombre_jefe_hogar || 'Hogar')}</strong>
-                  <div class="text-sm text-muted">Bloque ${esc(n.hogares?.id_bloque)} · Apto ${esc(n.hogares?.apartamento_unidad || '—')} · ${esc(n.descripcion || 'Sin descripción')}</div>
+                  <div class="text-sm text-muted">Sector ${esc(n.hogares?.id_bloque)} · Apto ${esc(n.hogares?.apartamento_unidad || '—')} · ${esc(n.descripcion || 'Sin descripción')}</div>
                 </div>
                 <button class="btn btn-sm btn-secondary" data-atender="${n.id}">Marcar atendida</button>
               </div>`).join('')}</div>`}
@@ -370,7 +377,7 @@
       <div class="card">
         ${entregas.length === 0 ? '<p class="text-muted">Todavía no se han registrado entregas.</p>' :
           `<div class="table-scroll"><table class="data-table">
-            <thead><tr><th>Fecha</th><th>Destino</th><th>Bloque</th><th>Ayuda</th></tr></thead>
+            <thead><tr><th>Fecha</th><th>Destino</th><th>Sector</th><th>Ayuda</th></tr></thead>
             <tbody>${entregas.map((e) => `
               <tr>
                 <td>${fmtFecha(e.fecha_hora)}</td>
@@ -396,13 +403,13 @@
   // =====================================================================
   let filtroHogares = { bloque: '', torre: '', texto: '', mascotas: '', medica: '', lider: '', agrupacion: '' };
 
-  function filaHogarHTML(h, agrupacionPorBloque) {
-    const agrupacion = agrupacionPorBloque ? agrupacionPorBloque.get(h.id_bloque) : null;
+  function filaHogarHTML(h, agrupacionPorId) {
+    const agrupacion = h.id_agrupacion ? agrupacionPorId.get(h.id_agrupacion) : null;
     return `
       <a class="hogar-row ${h.es_lider ? 'hogar-row--lider' : ''}" href="${rutaHogarEditar(h.id)}">
         <div class="info-main">
           <span class="title">${esc(h.nombre_jefe_hogar || '(Sin nombre)')}</span>
-          <span class="subtitle">${agrupacion ? esc(agrupacion) + ' · ' : ''}Bloque ${esc(h.id_bloque)}${h.id_torre ? ' · Torre ' + esc(h.id_torre) : ''} · Apto ${esc(h.apartamento_unidad || '—')} · ${telSpanHTML(h.telefono)}</span>
+          <span class="subtitle">Sector ${esc(h.id_bloque)}${agrupacion ? ' · Agrupación ' + esc(agrupacion.numero) : ''}${h.id_torre ? ' · Torre ' + esc(h.id_torre) : ''} · Apto ${esc(h.apartamento_unidad || '—')} · ${telSpanHTML(h.telefono)}</span>
         </div>
         <div class="info-side">
           ${h.es_lider ? '<span class="badge badge-warning">Líder</span>' : ''}
@@ -414,11 +421,11 @@
   }
 
   async function vistaCensoLista(root) {
-    const [hogares, bloques] = await Promise.all([DB.listarHogares(), DB.listarBloques()]);
+    const [hogares, bloques, agrupaciones] = await Promise.all([DB.listarHogares(), DB.listarBloques(), DB.listarAgrupaciones()]);
     state.bloques = bloques;
     const bloquesVisibles = esCoordinador() ? bloques : bloques.filter((b) => misBloques().includes(b.id) || misBloquesPorTorre().includes(b.id));
-    const agrupacionPorBloque = new Map(bloques.map((b) => [b.id, b.agrupacion]));
-    const agrupacionesDisponibles = Array.from(new Set(bloquesVisibles.map((b) => b.agrupacion).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'es'));
+    const agrupacionesVisibles = esCoordinador() ? agrupaciones : agrupaciones.filter((a) => misBloques().includes(a.id_bloque) || misAgrupacionesPorTorre().includes(a.id));
+    const agrupacionPorId = new Map(agrupaciones.map((a) => [a.id, a]));
     const duplicados = DB.detectarDuplicados(esCoordinador() ? hogares : hogares.filter(puedeVerHogar));
 
     root.innerHTML = `
@@ -428,12 +435,12 @@
       </div>
       ${duplicados.length === 0 ? '' : `
       <details class="card" style="border-color:var(--color-warning);">
-        <summary style="cursor:pointer; font-weight:700; color:var(--color-warning);">⚠️ ${duplicados.length} posible${duplicados.length === 1 ? '' : 's'} hogar${duplicados.length === 1 ? '' : 'es'} repetido${duplicados.length === 1 ? '' : 's'} (mismo bloque, apto y jefe de hogar)</summary>
+        <summary style="cursor:pointer; font-weight:700; color:var(--color-warning);">⚠️ ${duplicados.length} posible${duplicados.length === 1 ? '' : 's'} hogar${duplicados.length === 1 ? '' : 'es'} repetido${duplicados.length === 1 ? '' : 's'} (mismo sector, apto y jefe de hogar)</summary>
         <div class="hogar-list mt-4">
           ${duplicados.map((grupo) => `
             <div class="mb-0">
-              <div class="text-sm text-muted" style="margin-bottom:4px;">${grupo.length} registros iguales — Bloque ${esc(grupo[0].id_bloque)} · Apto ${esc(grupo[0].apartamento_unidad || '—')} · ${esc(grupo[0].nombre_jefe_hogar)}</div>
-              ${grupo.map((h) => filaHogarHTML(h, agrupacionPorBloque)).join('')}
+              <div class="text-sm text-muted" style="margin-bottom:4px;">${grupo.length} registros iguales — Sector ${esc(grupo[0].id_bloque)} · Apto ${esc(grupo[0].apartamento_unidad || '—')} · ${esc(grupo[0].nombre_jefe_hogar)}</div>
+              ${grupo.map((h) => filaHogarHTML(h, agrupacionPorId)).join('')}
             </div>`).join('')}
         </div>
       </details>`}
@@ -443,24 +450,23 @@
           <input id="f-texto" type="search" placeholder="Nombre, apto o teléfono" value="${esc(filtroHogares.texto)}">
         </div>
         <div class="field mb-0">
-          <label for="f-bloque">Bloque</label>
+          <label for="f-bloque">Sector</label>
           <select id="f-bloque">
             <option value="">Todos</option>
             ${bloquesVisibles.map((b) => `<option value="${esc(b.id)}" ${filtroHogares.bloque === b.id ? 'selected' : ''}>${esc(b.nombre)}</option>`).join('')}
           </select>
         </div>
         <div class="field mb-0">
-          <label for="f-torre">Torre</label>
-          <input id="f-torre" type="text" placeholder="Ej. F" value="${esc(filtroHogares.torre)}">
-        </div>
-        ${agrupacionesDisponibles.length === 0 ? '' : `
-        <div class="field mb-0">
           <label for="f-agrupacion">Agrupación</label>
           <select id="f-agrupacion">
             <option value="">Todas</option>
-            ${agrupacionesDisponibles.map((a) => `<option value="${esc(a)}" ${filtroHogares.agrupacion === a ? 'selected' : ''}>${esc(a)}</option>`).join('')}
+            ${agrupacionesVisibles.filter((a) => !filtroHogares.bloque || a.id_bloque === filtroHogares.bloque).map((a) => `<option value="${esc(a.id)}" ${filtroHogares.agrupacion === a.id ? 'selected' : ''}>Sector ${esc(a.id_bloque)} · Agrupación ${esc(a.numero)}</option>`).join('')}
           </select>
-        </div>`}
+        </div>
+        <div class="field mb-0">
+          <label for="f-torre">Torre</label>
+          <input id="f-torre" type="text" placeholder="Ej. F" value="${esc(filtroHogares.torre)}">
+        </div>
         <div class="field mb-0">
           <label for="f-mascotas">Mascotas</label>
           <select id="f-mascotas">
@@ -492,7 +498,7 @@
       const filtrados = propios.filter((h) => {
         if (filtroHogares.bloque && h.id_bloque !== filtroHogares.bloque) return false;
         if (filtroHogares.torre && !(h.id_torre || '').toLowerCase().includes(filtroHogares.torre.toLowerCase())) return false;
-        if (filtroHogares.agrupacion && agrupacionPorBloque.get(h.id_bloque) !== filtroHogares.agrupacion) return false;
+        if (filtroHogares.agrupacion && h.id_agrupacion !== filtroHogares.agrupacion) return false;
         if (filtroHogares.mascotas === 'si' && !h.tiene_mascotas) return false;
         if (filtroHogares.mascotas === 'no' && h.tiene_mascotas) return false;
         if (filtroHogares.medica === 'si' && !h.tiene_afectacion_medica) return false;
@@ -538,7 +544,7 @@
           if (pintado || !detalle.open) return;
           pintado = true;
           const clave = detalle.dataset.torre;
-          qs('[data-contenido]', detalle).innerHTML = grupos.get(clave).map((h) => filaHogarHTML(h, agrupacionPorBloque)).join('');
+          qs('[data-contenido]', detalle).innerHTML = grupos.get(clave).map((h) => filaHogarHTML(h, agrupacionPorId)).join('');
         });
       });
     }
@@ -554,10 +560,21 @@
       window.location.href = tel.dataset.tel;
     });
 
+    function repintarSelectAgrupacion() {
+      const select = qs('#f-agrupacion', root);
+      const disponibles = agrupacionesVisibles.filter((a) => !filtroHogares.bloque || a.id_bloque === filtroHogares.bloque);
+      select.innerHTML = `<option value="">Todas</option>${disponibles.map((a) => `<option value="${esc(a.id)}">Sector ${esc(a.id_bloque)} · Agrupación ${esc(a.numero)}</option>`).join('')}`;
+    }
+
     qs('#f-texto', root).addEventListener('input', debounce((e) => { filtroHogares.texto = e.target.value; pintar(); }, 200));
-    qs('#f-bloque', root).addEventListener('change', (e) => { filtroHogares.bloque = e.target.value; pintar(); });
+    qs('#f-bloque', root).addEventListener('change', (e) => {
+      filtroHogares.bloque = e.target.value;
+      filtroHogares.agrupacion = '';
+      repintarSelectAgrupacion();
+      pintar();
+    });
     qs('#f-torre', root).addEventListener('input', debounce((e) => { filtroHogares.torre = e.target.value; pintar(); }, 200));
-    qs('#f-agrupacion', root)?.addEventListener('change', (e) => { filtroHogares.agrupacion = e.target.value; pintar(); });
+    qs('#f-agrupacion', root).addEventListener('change', (e) => { filtroHogares.agrupacion = e.target.value; pintar(); });
     qs('#f-mascotas', root).addEventListener('change', (e) => { filtroHogares.mascotas = e.target.value; pintar(); });
     qs('#f-medica', root).addEventListener('change', (e) => { filtroHogares.medica = e.target.value; pintar(); });
     qs('#f-lider', root).addEventListener('change', (e) => { filtroHogares.lider = e.target.value; pintar(); });
@@ -587,19 +604,31 @@
 
     const h0 = hogarExistente || {
       id_bloque: bloquesVisibles.length === 1 ? bloquesVisibles[0].id : '',
-      id_torre: '', apartamento_unidad: '', nombre_jefe_hogar: '', telefono: '',
+      id_agrupacion: '', id_torre: '', apartamento_unidad: '', nombre_jefe_hogar: '', telefono: '',
       mujeres_adultas: 0, hombres_adultos: 0, ninas: 0, ninos: 0, abuelas: 0, abuelos: 0,
       tiene_afectacion_medica: false, requerimiento_prioritario: '', tiene_mascotas: false, mascotas: [],
       es_lider: false, miembros_hogar: []
     };
 
-    // Letras de torre permitidas para el bloque actualmente elegido, cuando
-    // el usuario es líder de torre (refuerza en UI lo que ya bloquea RLS).
-    function torresPermitidasParaBloque(idBloque) {
-      return misTorres()
-        .filter((t) => t.split('-')[0] === idBloque)
-        .map((t) => t.split('-').slice(1).join('-'));
+    // Filtra el catálogo de agrupaciones/torres a lo que este usuario puede
+    // ver: el coordinador ve todo lo que trae RLS, un líder de torre solo
+    // sus propias agrupaciones/torres asignadas (defensa en profundidad,
+    // RLS ya restringe por sector pero no hasta la agrupación/torre exacta).
+    function filtrarAgrupaciones(lista, idBloque) {
+      if (esCoordinador()) return lista;
+      const permitidas = new Set(misAgrupacionesPorTorre(idBloque));
+      return lista.filter((a) => permitidas.has(a.id));
     }
+    function filtrarTorres(lista, idAgrupacion) {
+      if (esCoordinador()) return lista;
+      const permitidas = new Set(misTorres());
+      return lista.filter((t) => permitidas.has(t.id));
+    }
+
+    const [agrupacionesIniciales, torresIniciales] = await Promise.all([
+      h0.id_bloque ? DB.listarAgrupaciones(h0.id_bloque) : Promise.resolve([]),
+      h0.id_agrupacion ? DB.listarTorres(h0.id_agrupacion) : Promise.resolve([])
+    ]);
 
     const mascotasPorTipo = { perro: 0, gato: 0, otro: 0 };
     (h0.mascotas || []).forEach((m) => { if (mascotasPorTipo[m.tipo] !== undefined) mascotasPorTipo[m.tipo] += m.cantidad; });
@@ -629,28 +658,36 @@
       <form id="form-hogar" class="card" novalidate>
         <div class="form-row cols-2">
           <div class="field">
-            <label for="h-bloque">Bloque</label>
-            <select id="h-bloque" required ${bloquesVisibles.length === 1 && !esCoordinador() ? '' : ''}>
+            <label for="h-bloque">Sector</label>
+            <select id="h-bloque" required>
               <option value="">Selecciona…</option>
               ${bloquesVisibles.map((b) => `<option value="${esc(b.id)}" ${h0.id_bloque === b.id ? 'selected' : ''}>${esc(b.nombre)}</option>`).join('')}
             </select>
           </div>
           <div class="field">
-            <label for="h-torre">Torre</label>
-            ${esLiderDeTorre
-              ? `<select id="h-torre">${torresPermitidasParaBloque(h0.id_bloque).map((t) => `<option value="${esc(t)}" ${h0.id_torre === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`
-              : `<input id="h-torre" type="text" placeholder="Ej. F" value="${esc(h0.id_torre || '')}">`}
+            <label for="h-agrupacion">Agrupación</label>
+            <select id="h-agrupacion">
+              <option value="">Selecciona…</option>
+              ${filtrarAgrupaciones(agrupacionesIniciales, h0.id_bloque).map((a) => `<option value="${esc(a.id)}" ${h0.id_agrupacion === a.id ? 'selected' : ''}>Agrupación ${esc(a.numero)}</option>`).join('')}
+            </select>
           </div>
         </div>
         <div class="form-row cols-2">
           <div class="field">
+            <label for="h-torre">Torre</label>
+            <select id="h-torre">
+              <option value="">Selecciona…</option>
+              ${filtrarTorres(torresIniciales, h0.id_agrupacion).map((t) => `<option value="${esc(t.letra_torre)}" ${h0.id_torre === t.letra_torre ? 'selected' : ''}>${esc(t.letra_torre)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
             <label for="h-apto">Apartamento / unidad</label>
             <input id="h-apto" type="text" value="${esc(h0.apartamento_unidad || '')}">
           </div>
-          <div class="field">
-            <label for="h-jefe">Nombre del jefe de hogar</label>
-            <input id="h-jefe" type="text" required value="${esc(h0.nombre_jefe_hogar || '')}">
-          </div>
+        </div>
+        <div class="field">
+          <label for="h-jefe">Nombre del jefe de hogar</label>
+          <input id="h-jefe" type="text" required value="${esc(h0.nombre_jefe_hogar || '')}">
         </div>
         <div class="field">
           <label for="h-tel">Teléfono</label>
@@ -787,14 +824,25 @@
       }
     });
 
-    if (esLiderDeTorre) {
-      qs('#h-bloque', root).addEventListener('change', (e) => {
-        const torreSelect = qs('#h-torre', root);
-        if (torreSelect && torreSelect.tagName === 'SELECT') {
-          torreSelect.innerHTML = torresPermitidasParaBloque(e.target.value).map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
-        }
-      });
-    }
+    qs('#h-bloque', root).addEventListener('change', async (e) => {
+      const agrupacionSelect = qs('#h-agrupacion', root);
+      const torreSelect = qs('#h-torre', root);
+      torreSelect.innerHTML = '<option value="">Selecciona…</option>';
+      if (!e.target.value) { agrupacionSelect.innerHTML = '<option value="">Selecciona…</option>'; return; }
+      try {
+        const agrupaciones = filtrarAgrupaciones(await DB.listarAgrupaciones(e.target.value), e.target.value);
+        agrupacionSelect.innerHTML = '<option value="">Selecciona…</option>' + agrupaciones.map((a) => `<option value="${esc(a.id)}">Agrupación ${esc(a.numero)}</option>`).join('');
+      } catch (ex) { toast(errorAmigable(ex), 'error'); }
+    });
+
+    qs('#h-agrupacion', root).addEventListener('change', async (e) => {
+      const torreSelect = qs('#h-torre', root);
+      if (!e.target.value) { torreSelect.innerHTML = '<option value="">Selecciona…</option>'; return; }
+      try {
+        const torres = filtrarTorres(await DB.listarTorres(e.target.value), e.target.value);
+        torreSelect.innerHTML = '<option value="">Selecciona…</option>' + torres.map((t) => `<option value="${esc(t.letra_torre)}">${esc(t.letra_torre)}</option>`).join('');
+      } catch (ex) { toast(errorAmigable(ex), 'error'); }
+    });
 
     qs('#h-medica', root).addEventListener('change', (e) => {
       qs('#campo-descripcion-medica', root).style.display = e.target.checked ? '' : 'none';
@@ -806,12 +854,13 @@
       const errBox = qs('#form-hogar-error', root);
       errBox.textContent = '';
       const idBloque = qs('#h-bloque', root).value;
-      const idTorre = qs('#h-torre', root).value.trim() || null;
+      const idAgrupacion = qs('#h-agrupacion', root).value || null;
+      const idTorre = qs('#h-torre', root).value || null;
       const jefe = qs('#h-jefe', root).value.trim();
-      if (!idBloque) { errBox.textContent = 'Selecciona el bloque.'; return; }
+      if (!idBloque) { errBox.textContent = 'Selecciona el sector.'; return; }
       if (!jefe) { errBox.textContent = 'Escribe el nombre del jefe de hogar.'; return; }
-      if (!esCoordinador() && !misBloques().includes(idBloque) && !misBloquesPorTorre().includes(idBloque)) { errBox.textContent = 'No tienes permiso para censar en ese bloque.'; return; }
-      if (esLiderDeTorre && !misTorres().includes(`${idBloque}-${idTorre || ''}`)) { errBox.textContent = 'No tienes permiso para censar en esa torre.'; return; }
+      if (!esCoordinador() && !misBloques().includes(idBloque) && !misBloquesPorTorre().includes(idBloque)) { errBox.textContent = 'No tienes permiso para censar en ese sector.'; return; }
+      if (esLiderDeTorre && !misTorres().includes(`${idAgrupacion || ''}-${idTorre || ''}`)) { errBox.textContent = 'No tienes permiso para censar en esa agrupación/torre.'; return; }
 
       const miembrosPlanos = CATEGORIAS.flatMap(([, categoria]) =>
         miembros[categoria]
@@ -821,6 +870,7 @@
 
       const payload = {
         id_bloque: idBloque,
+        id_agrupacion: idAgrupacion,
         id_torre: idTorre,
         apartamento_unidad: qs('#h-apto', root).value.trim(),
         nombre_jefe_hogar: jefe,
@@ -941,7 +991,7 @@
       <div class="card">
         ${entregas.length === 0 ? '<p class="text-muted">Aún no hay entregas registradas.</p>' :
           `<div class="table-scroll"><table class="data-table">
-            <thead><tr><th>Fecha</th><th>Destino</th><th>Bloque</th><th>Ayuda</th><th>Evidencia</th></tr></thead>
+            <thead><tr><th>Fecha</th><th>Destino</th><th>Sector</th><th>Ayuda</th><th>Evidencia</th></tr></thead>
             <tbody>${entregas.map((e) => `
               <tr>
                 <td>${fmtFecha(e.fecha_hora)}</td>
@@ -978,7 +1028,7 @@
       resultadosBox.innerHTML = encontrados.map((h) =>
         `<div class="hogar-row" style="margin-top:6px;" data-elegir="${h.id}">
           <div class="info-main"><span class="title">${esc(h.nombre_jefe_hogar)}</span>
-          <span class="subtitle">Bloque ${esc(h.id_bloque)} · Apto ${esc(h.apartamento_unidad || '—')}</span></div>
+          <span class="subtitle">Sector ${esc(h.id_bloque)} · Apto ${esc(h.apartamento_unidad || '—')}</span></div>
         </div>`).join('') || '<p class="text-muted text-sm">Sin resultados.</p>';
     }, 200));
 
@@ -986,7 +1036,7 @@
       const row = e.target.closest('[data-elegir]');
       if (!row) return;
       hogarSeleccionado = hogares.find((h) => h.id === row.dataset.elegir);
-      qs('#e-hogar-seleccionado', root).innerHTML = `Hogar seleccionado: <strong>${esc(hogarSeleccionado.nombre_jefe_hogar)}</strong> (Bloque ${esc(hogarSeleccionado.id_bloque)}, Apto ${esc(hogarSeleccionado.apartamento_unidad || '—')})`;
+      qs('#e-hogar-seleccionado', root).innerHTML = `Hogar seleccionado: <strong>${esc(hogarSeleccionado.nombre_jefe_hogar)}</strong> (Sector ${esc(hogarSeleccionado.id_bloque)}, Apto ${esc(hogarSeleccionado.apartamento_unidad || '—')})`;
       buscarInput.value = '';
       resultadosBox.innerHTML = '';
     });
@@ -1043,7 +1093,7 @@
         const lider = lideres.find((l) => l.id === liderId);
         const torreElegida = qs('#e-torre-grupal', root).style.display !== 'none' ? qs('#e-torre-grupal', root).value : null;
         const idBloque = torreElegida ? torreElegida.split('-')[0] : (lider.bloques_permitidos || [])[0];
-        if (!idBloque) { errBox.textContent = 'Ese líder no tiene bloque ni torre asignada.'; return; }
+        if (!idBloque) { errBox.textContent = 'Ese líder no tiene sector ni torre asignada.'; return; }
         entregaBase = {
           id_hogar: null,
           id_bloque: idBloque,
@@ -1192,146 +1242,139 @@
   }
 
   // =====================================================================
-  // ADMINISTRACIÓN — bloques / torres / líderes (solo coordinador)
+  // ADMINISTRACIÓN — sectores / agrupaciones / torres / líderes (coordinador)
   // =====================================================================
   async function vistaAdministracion(root) {
-    const [bloques, torres, lideres, hogares] = await Promise.all([
-      DB.listarBloques(), DB.listarTorres(), DB.listarLideres(), DB.listarHogares()
+    const [bloques, agrupaciones, torres, lideres, hogares] = await Promise.all([
+      DB.listarBloques(), DB.listarAgrupaciones(), DB.listarTorres(), DB.listarLideres(), DB.listarHogares()
     ]);
 
     root.innerHTML = `
       <h1>Administración</h1>
 
       <div class="card">
-        <div class="card-header"><h2>Importar censo inicial</h2></div>
-        <p class="text-muted text-sm">Carga los 202 hogares del censo original en un solo paso. Se omiten automáticamente los que ya estén importados (no duplica).</p>
-        <div class="progress-bar-track mt-4" id="import-progreso-track" style="display:none;"><div class="progress-bar-fill" id="import-progreso-fill" style="width:0%"></div></div>
-        <p class="text-sm" id="import-progreso-texto"></p>
-        <button class="btn btn-primary mt-4" id="btn-importar" type="button" ${hogares.some((h) => h.censo_inicial_importado) ? 'disabled' : ''}>
-          ${hogares.some((h) => h.censo_inicial_importado) ? 'Censo inicial ya importado' : 'Importar censo inicial (202 hogares)'}
-        </button>
+        <div class="card-header"><h2>Sincronizar censo maestro</h2></div>
+        <p class="text-muted text-sm">Compara el censo maestro (sector, agrupación, torre y apto reales de cada hogar) contra lo que ya está cargado, y arma una vista previa de qué hogares hay que actualizar o crear. No escribe nada hasta que confirmes.</p>
+        <button class="btn btn-primary mt-4" id="btn-sincronizar" type="button">Detectar cambios</button>
+        <div id="sincronizar-preview-region" class="mt-4"></div>
       </div>
 
       <div class="card">
-        <div class="card-header"><h2>Bloques</h2><button class="btn btn-sm btn-secondary" id="btn-nuevo-bloque" type="button">+ Bloque</button></div>
+        <div class="card-header"><h2>Sectores</h2><button class="btn btn-sm btn-secondary" id="btn-nuevo-bloque" type="button">+ Sector</button></div>
         <div class="table-scroll"><table class="data-table">
-          <thead><tr><th>ID</th><th>Nombre</th><th>Agrupación</th><th>Hogares censados</th><th></th></tr></thead>
-          <tbody>${bloques.map((b) => `<tr><td>${esc(b.id)}</td><td>${esc(b.nombre)}</td><td>${esc(b.agrupacion || '—')}</td><td>${hogares.filter((h) => h.id_bloque === b.id).length}</td><td><button class="btn btn-sm btn-ghost" data-editar-agrupacion="${esc(b.id)}" type="button">Editar agrupación</button></td></tr>`).join('')}</tbody>
+          <thead><tr><th>ID</th><th>Nombre</th><th>Agrupaciones</th><th>Hogares censados</th></tr></thead>
+          <tbody>${bloques.map((b) => `<tr><td>${esc(b.id)}</td><td>${esc(b.nombre)}</td><td>${agrupaciones.filter((a) => a.id_bloque === b.id).length}</td><td>${hogares.filter((h) => h.id_bloque === b.id).length}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>Agrupaciones</h2><button class="btn btn-sm btn-secondary" id="btn-nueva-agrupacion" type="button">+ Agrupación</button></div>
+        <p class="text-muted text-sm">Cada sector tiene sus propias agrupaciones — no se comparten entre sectores.</p>
+        <div class="table-scroll"><table class="data-table">
+          <thead><tr><th>Sector</th><th>Agrupación</th><th>Torres</th></tr></thead>
+          <tbody>${agrupaciones.map((a) => `<tr><td>${esc(a.id_bloque)}</td><td>${esc(a.numero)}${a.nombre ? ' · ' + esc(a.nombre) : ''}</td><td>${torres.filter((t) => t.id_agrupacion === a.id).length}</td></tr>`).join('') || '<tr><td colspan="3" class="text-muted">Sin agrupaciones registradas todavía.</td></tr>'}</tbody>
         </table></div>
       </div>
 
       <div class="card">
         <div class="card-header"><h2>Torres</h2><button class="btn btn-sm btn-secondary" id="btn-nueva-torre" type="button">+ Torre</button></div>
         <div class="table-scroll"><table class="data-table">
-          <thead><tr><th>ID</th><th>Bloque</th><th>Letra</th></tr></thead>
-          <tbody>${torres.map((t) => `<tr><td>${esc(t.id)}</td><td>${esc(t.id_bloque)}</td><td>${esc(t.letra_torre)}</td></tr>`).join('') || '<tr><td colspan="3" class="text-muted">Sin torres registradas todavía.</td></tr>'}</tbody>
+          <thead><tr><th>Sector</th><th>Agrupación</th><th>Letra</th></tr></thead>
+          <tbody>${torres.map((t) => `<tr><td>${esc(t.id_bloque)}</td><td>${esc((agrupaciones.find((a) => a.id === t.id_agrupacion) || {}).numero || '—')}</td><td>${esc(t.letra_torre)}</td></tr>`).join('') || '<tr><td colspan="3" class="text-muted">Sin torres registradas todavía.</td></tr>'}</tbody>
         </table></div>
       </div>
 
       <div class="card">
         <div class="card-header"><h2>Líderes</h2><button class="btn btn-sm btn-secondary" id="btn-nuevo-lider" type="button">+ Líder</button></div>
         <div class="table-scroll"><table class="data-table">
-          <thead><tr><th>Nombre</th><th>Teléfono</th><th>Torres</th><th>Bloques</th><th>Estado</th></tr></thead>
+          <thead><tr><th>Nombre</th><th>Teléfono</th><th>Torres</th><th>Sectores</th><th>Estado</th></tr></thead>
           <tbody>${lideres.map((l) => `<tr><td>${esc(l.nombre)}</td><td>${telLinkHTML(l.telefono)}</td><td>${(l.torres_permitidas || []).join(', ') || '—'}</td><td>${(l.bloques_permitidos || []).join(', ') || '—'}</td><td>${l.activo ? '<span class="badge badge-success">Activo</span>' : '<span class="badge badge-neutral">Inactivo</span>'}</td></tr>`).join('') || '<tr><td colspan="5" class="text-muted">Sin líderes registrados todavía.</td></tr>'}</tbody>
         </table></div>
-      </div>
-
-      <div class="card">
-        <div class="card-header"><h2>Corregir torres faltantes</h2></div>
-        <p class="text-muted text-sm">Busca hogares sin torre asignada donde la letra viene pegada al número del apartamento (ej. "3B02" → torre B) y la copia al campo Torre. Muestra una vista previa antes de aplicar.</p>
-        <button class="btn btn-secondary mt-4" id="btn-detectar-torres" type="button">Detectar torres faltantes</button>
-        <div id="torres-preview-region" class="mt-4"></div>
       </div>`;
 
-    qs('#btn-importar', root)?.addEventListener('click', async () => {
-      const ok = await confirmar('Se importarán hasta 202 hogares del censo original. Esto puede tardar un minuto. ¿Continuar?', { textoOk: 'Importar' });
-      if (!ok) return;
-      const btn = qs('#btn-importar', root);
-      const track = qs('#import-progreso-track', root);
-      const fill = qs('#import-progreso-fill', root);
-      const texto = qs('#import-progreso-texto', root);
-      btn.disabled = true; track.style.display = 'block';
-      try {
-        const { importados, omitidos } = await DB.importarHogaresIniciales(window.SEED_HOGARES, state.perfil.id, (imp, om, total) => {
-          const pct = Math.round(((imp + om) / total) * 100);
-          fill.style.width = pct + '%';
-          texto.textContent = `Procesando ${imp + om} de ${total}… (${imp} importados, ${om} ya existían)`;
-        });
-        toast(`Importación completa: ${importados} hogares importados, ${omitidos} ya existían.`, 'success');
-        router();
-      } catch (ex) {
-        toast(errorAmigable(ex), 'error');
-        btn.disabled = false;
-      }
-    });
-
     qs('#btn-nuevo-bloque', root).addEventListener('click', async () => {
-      const id = prompt('ID del bloque (ej. "8"):'); if (!id) return;
-      const nombre = prompt('Nombre a mostrar (ej. "Bloque 8"):', `Bloque ${id}`); if (!nombre) return;
-      const agrupacion = prompt('Agrupación/zona a la que pertenece (opcional, ej. "Agrupación 1"):') || null;
-      try { await DB.crearBloque({ id, nombre, agrupacion }); toast('Bloque creado', 'success'); router(); }
+      const id = prompt('ID del sector (ej. "8"):'); if (!id) return;
+      const nombre = prompt('Nombre a mostrar (ej. "Sector 8"):', `Sector ${id}`); if (!nombre) return;
+      try { await DB.crearBloque({ id, nombre }); toast('Sector creado', 'success'); router(); }
       catch (ex) { toast(errorAmigable(ex), 'error'); }
     });
 
-    qsa('[data-editar-agrupacion]', root).forEach((btn) => btn.addEventListener('click', async () => {
-      const bloque = bloques.find((b) => b.id === btn.dataset.editarAgrupacion);
-      const agrupacion = prompt('Agrupación/zona de este bloque (deja vacío para quitarla):', bloque.agrupacion || '');
-      if (agrupacion === null) return;
-      try { await DB.actualizarBloque(bloque.id, { agrupacion: agrupacion.trim() || null }); toast('Actualizado', 'success'); router(); }
+    qs('#btn-nueva-agrupacion', root).addEventListener('click', async () => {
+      const idBloque = prompt(`¿De qué sector es esta agrupación? (${bloques.map((b) => b.id).join(', ')}):`); if (!idBloque) return;
+      const numero = prompt('Número o código de la agrupación (ej. "1"):'); if (!numero) return;
+      const nombre = prompt('Nombre descriptivo (opcional):') || null;
+      try { await DB.crearAgrupacion({ id_bloque: idBloque, numero, nombre }); toast('Agrupación creada', 'success'); router(); }
       catch (ex) { toast(errorAmigable(ex), 'error'); }
-    }));
+    });
 
     qs('#btn-nueva-torre', root).addEventListener('click', async () => {
-      const idBloque = prompt('¿En qué bloque va la torre? (ID del bloque):'); if (!idBloque) return;
+      const idBloque = prompt(`¿De qué sector es esta torre? (${bloques.map((b) => b.id).join(', ')}):`); if (!idBloque) return;
+      const agrupacionesDelSector = agrupaciones.filter((a) => a.id_bloque === idBloque);
+      if (agrupacionesDelSector.length === 0) { toast('Ese sector todavía no tiene agrupaciones. Crea una agrupación primero.', 'error'); return; }
+      const numero = prompt(`¿Agrupación? (${agrupacionesDelSector.map((a) => a.numero).join(', ')}):`); if (!numero) return;
+      const agrupacion = agrupacionesDelSector.find((a) => a.numero === numero);
+      if (!agrupacion) { toast('Esa agrupación no existe en ese sector.', 'error'); return; }
       const letra = prompt('Letra de la torre (ej. "F"):'); if (!letra) return;
-      try { await DB.crearTorre({ id: `${idBloque}-${letra}`, id_bloque: idBloque, letra_torre: letra }); toast('Torre creada', 'success'); router(); }
+      try { await DB.crearTorre({ id_bloque: idBloque, id_agrupacion: agrupacion.id, letra_torre: letra }); toast('Torre creada', 'success'); router(); }
       catch (ex) { toast(errorAmigable(ex), 'error'); }
     });
 
-    qs('#btn-nuevo-lider', root).addEventListener('click', () => abrirModalNuevoLider(hogares));
+    qs('#btn-nuevo-lider', root).addEventListener('click', () => abrirModalNuevoLider(torres, agrupaciones));
 
-    qs('#btn-detectar-torres', root).addEventListener('click', () => {
-      const cambios = DB.detectarTorresFaltantes(hogares);
-      const region = qs('#torres-preview-region', root);
-      if (cambios.length === 0) {
-        region.innerHTML = '<p class="text-muted text-sm">No se encontraron hogares con torre faltante y letra detectable en el apartamento.</p>';
+    qs('#btn-sincronizar', root).addEventListener('click', () => {
+      const resultado = DB.reconciliarCensoMaestro(hogares, window.SEED_HOGARES);
+      const region = qs('#sincronizar-preview-region', root);
+      const { actualizaciones, nuevos, ambiguos, pendientes } = resultado;
+
+      if (actualizaciones.length === 0 && nuevos.length === 0 && ambiguos.length === 0 && pendientes.length === 0) {
+        region.innerHTML = '<p class="text-muted text-sm">El censo ya está al día con el maestro. Nada que sincronizar.</p>';
         return;
       }
-      region.innerHTML = `
-        <div class="table-scroll">
-          <table class="data-table">
-            <thead><tr><th>Bloque</th><th>Apto</th><th>Jefe de hogar</th><th>Torre detectada</th></tr></thead>
-            <tbody>${cambios.map((c) => `<tr><td>${esc(c.idBloque)}</td><td>${esc(c.apto)}</td><td>${esc(c.jefe || '(Sin nombre)')}</td><td><strong>${esc(c.letra)}</strong></td></tr>`).join('')}</tbody>
-          </table>
-        </div>
-        <button class="btn btn-primary mt-4" id="btn-aplicar-torres" type="button">Aplicar corrección a ${cambios.length} hogar${cambios.length === 1 ? '' : 'es'}</button>`;
 
-      qs('#btn-aplicar-torres', region).addEventListener('click', async () => {
-        const ok = await confirmar(`Se actualizará el campo Torre en ${cambios.length} hogares según la vista previa. ¿Continuar?`, { textoOk: 'Aplicar corrección' });
+      const filaMaestro = (f) => `Sector ${esc(f.bloque || '—')}${f.agrupacion ? ' · Agrupación ' + esc(f.agrupacion) : ''}${f.torre ? ' · Torre ' + esc(f.torre) : ''} · Apto ${esc(f.apto || '—')} · ${esc(f.jefe_hogar || '(Sin nombre)')}`;
+
+      region.innerHTML = `
+        ${actualizaciones.length === 0 ? '' : `
+        <div class="section-title">Se actualizarán (${actualizaciones.length})</div>
+        <div class="table-scroll"><table class="data-table">
+          <thead><tr><th>Hogar existente</th><th>Datos correctos (maestro)</th></tr></thead>
+          <tbody>${actualizaciones.map(({ hogar, fila }) => `<tr><td>${esc(hogar.nombre_jefe_hogar || '(Sin nombre)')} — Sector ${esc(hogar.id_bloque)}, Apto ${esc(hogar.apartamento_unidad || '—')}</td><td>${filaMaestro(fila)}</td></tr>`).join('')}</tbody>
+        </table></div>`}
+        ${nuevos.length === 0 ? '' : `
+        <div class="section-title">Se crearán (${nuevos.length})</div>
+        <div class="table-scroll"><table class="data-table">
+          <thead><tr><th>Datos (maestro)</th></tr></thead>
+          <tbody>${nuevos.map((f) => `<tr><td>${filaMaestro(f)}</td></tr>`).join('')}</tbody>
+        </table></div>`}
+        ${ambiguos.length === 0 ? '' : `
+        <div class="section-title">Revisar a mano — más de una coincidencia (${ambiguos.length})</div>
+        <div class="table-scroll"><table class="data-table">
+          <thead><tr><th>Fila del maestro</th><th>Candidatos encontrados</th></tr></thead>
+          <tbody>${ambiguos.map(({ fila, candidatos }) => `<tr><td>${filaMaestro(fila)}</td><td>${candidatos.map((c) => `${esc(c.nombre_jefe_hogar || '(Sin nombre)')} (Apto ${esc(c.apartamento_unidad || '—')})`).join('; ')}</td></tr>`).join('')}</tbody>
+        </table></div>`}
+        ${pendientes.length === 0 ? '' : `
+        <div class="section-title">Sin sector definido — no se pueden crear solos (${pendientes.length})</div>
+        <div class="table-scroll"><table class="data-table">
+          <thead><tr><th>Jefe de hogar</th><th>Observaciones</th></tr></thead>
+          <tbody>${pendientes.map((f) => `<tr><td>${esc(f.jefe_hogar || '(Sin nombre)')}</td><td>${esc(f.observaciones || '—')}</td></tr>`).join('')}</tbody>
+        </table></div>`}
+        ${actualizaciones.length === 0 && nuevos.length === 0 ? '' : `<button class="btn btn-primary mt-4" id="btn-aplicar-sincronizar" type="button">Aplicar ${actualizaciones.length} actualización${actualizaciones.length === 1 ? '' : 'es'} y ${nuevos.length} creación${nuevos.length === 1 ? '' : 'es'}</button>`}`;
+
+      qs('#btn-aplicar-sincronizar', region)?.addEventListener('click', async () => {
+        const ok = await confirmar(`Se actualizarán ${actualizaciones.length} hogares y se crearán ${nuevos.length} nuevos según la vista previa. ¿Continuar?`, { textoOk: 'Aplicar' });
         if (!ok) return;
         try {
-          const total = await DB.corregirTorresFaltantes(cambios);
-          toast(`${total} hogares corregidos.`, 'success');
+          const { actualizados, creados } = await DB.aplicarSincronizacionCensoMaestro(resultado, state.perfil.id);
+          toast(`Listo: ${actualizados} hogares actualizados, ${creados} creados.`, 'success');
           router();
         } catch (ex) { toast(errorAmigable(ex), 'error'); }
       });
     });
   }
 
-  function abrirModalNuevoLider(hogares) {
-    // Torres "reales" (id_torre ya corregido en la base de datos) vs.
-    // "detectadas" (todavía no corregidas, solo se infieren del apto).
-    const torresReales = new Set();
-    const torresDetectadas = new Set();
-    hogares.forEach((h) => {
-      const letra = torreEfectiva(h);
-      if (!letra) return;
-      const clave = `${h.id_bloque}-${letra}`;
-      (h.id_torre ? torresReales : torresDetectadas).add(clave);
-    });
-    const torresDisponibles = Array.from(new Set([...torresReales, ...torresDetectadas]))
-      .sort((a, b) => a.localeCompare(b, 'es'));
-    const hayDetectadasSinCorregir = Array.from(torresDetectadas).some((t) => !torresReales.has(t));
+  function abrirModalNuevoLider(torres, agrupaciones) {
+    const agrupacionPorId = new Map(agrupaciones.map((a) => [a.id, a]));
+    const torresDisponibles = torres.slice().sort((a, b) => a.id.localeCompare(b.id, 'es'));
 
     const backdrop = h(`
       <div class="modal-backdrop" role="dialog" aria-modal="true" aria-label="Nuevo líder">
@@ -1340,14 +1383,12 @@
           <div class="field"><label for="nl-nombre">Nombre completo</label><input id="nl-nombre" type="text"></div>
           <div class="field"><label for="nl-tel">Teléfono (será su usuario)</label><input id="nl-tel" type="tel" inputmode="numeric"></div>
           <div class="field"><label for="nl-pin">PIN de 6 dígitos</label><input id="nl-pin" type="password" inputmode="numeric" maxlength="6"></div>
-          ${hayDetectadasSinCorregir ? `<p class="text-muted text-sm">⚠️ Algunas torres de la lista todavía no están guardadas en el censo (se detectaron por el apto, marcadas con *). Para que ese líder pueda ver y editar esos hogares, corrige primero sus torres con el botón "Detectar torres faltantes" de esta misma pantalla.</p>` : ''}
           <div class="field">
             <label>Torres asignadas</label>
             <div class="chip-group">${torresDisponibles.map((t) => {
-              const [bloque, torre] = t.split('-');
-              const sinCorregir = !torresReales.has(t);
-              return `<button type="button" class="chip" data-torre-chip="${esc(t)}">Bloque ${esc(bloque)} · Torre ${esc(torre)}${sinCorregir ? ' *' : ''}</button>`;
-            }).join('') || '<p class="text-muted text-sm">Todavía no hay torres censadas. Censa al menos un hogar con torre para poder asignarla.</p>'}</div>
+              const agrupacion = agrupacionPorId.get(t.id_agrupacion);
+              return `<button type="button" class="chip" data-torre-chip="${esc(t.id)}">Sector ${esc(t.id_bloque)} · Agrupación ${esc(agrupacion ? agrupacion.numero : '—')} · Torre ${esc(t.letra_torre)}</button>`;
+            }).join('') || '<p class="text-muted text-sm">Todavía no hay torres en el catálogo. Corre "Sincronizar censo maestro" o crea una torre a mano primero.</p>'}</div>
           </div>
           <p class="error-text" id="nl-error" role="alert" aria-live="polite"></p>
           <div class="modal-actions">
@@ -1398,9 +1439,11 @@
       </div>`;
 
     qs('#exp-hogares', root).addEventListener('click', async () => {
-      const hogares = await DB.listarHogares();
+      const [hogares, agrupaciones] = await Promise.all([DB.listarHogares(), DB.listarAgrupaciones()]);
+      const numeroPorAgrupacion = new Map(agrupaciones.map((a) => [a.id, a.numero]));
       exportarCSV('censo_hogares.csv', hogares, [
-        { titulo: 'Bloque', valor: (h) => h.id_bloque },
+        { titulo: 'Sector', valor: (h) => h.id_bloque },
+        { titulo: 'Agrupación', valor: (h) => h.id_agrupacion ? numeroPorAgrupacion.get(h.id_agrupacion) : '' },
         { titulo: 'Torre', valor: (h) => h.id_torre },
         { titulo: 'Apto', valor: (h) => h.apartamento_unidad },
         { titulo: 'Jefe de hogar', valor: (h) => h.nombre_jefe_hogar },
@@ -1420,7 +1463,7 @@
         { titulo: 'Fecha', valor: (e) => e.fecha_hora },
         { titulo: 'Tipo', valor: (e) => e.id_hogar ? 'Por hogar' : 'Grupal (líder/torre)' },
         { titulo: 'Hogar', valor: (e) => e.hogares?.nombre_jefe_hogar },
-        { titulo: 'Bloque', valor: (e) => e.id_bloque },
+        { titulo: 'Sector', valor: (e) => e.id_bloque },
         { titulo: 'Torre', valor: (e) => e.id_torre },
         { titulo: 'Ayudas', valor: (e) => (e.entrega_items || []).map((it) => `${it.tipos_ayuda?.nombre}${it.cantidad > 1 ? ' x' + it.cantidad : ''}`).join(' / ') },
         { titulo: 'Quién recibió', valor: (e) => e.nombre_quien_recibio }

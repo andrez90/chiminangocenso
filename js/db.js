@@ -12,6 +12,15 @@
     auth: { persistSession: true, autoRefreshToken: true }
   });
 
+  // Normalizadores para emparejar el censo maestro contra lo ya cargado en
+  // Supabase (nombres/aptos escritos con variaciones de mayúsculas, tildes
+  // o espacios no deberían crear duplicados).
+  function normNombre(s) {
+    return String(s || '').trim().toUpperCase().normalize('NFKD').replace(/[̀-ͯ]/g, '');
+  }
+  function normApto(s) { return String(s || '').trim().toUpperCase(); }
+  function normTel(s) { return String(s || '').replace(/\D/g, ''); }
+
   const DB = {
     client,
 
@@ -86,15 +95,30 @@
       const { error } = await client.from('bloques').update(cambios).eq('id', id);
       if (error) throw error;
     },
-    async listarTorres(idBloque) {
-      let q = client.from('torres').select('*').order('letra_torre');
+    async listarAgrupaciones(idBloque) {
+      let q = client.from('agrupaciones').select('*').order('numero');
       if (idBloque) q = q.eq('id_bloque', idBloque);
       const { data, error } = await q;
       if (error) throw error;
       return data;
     },
-    async crearTorre(torre) {
-      const { error } = await client.from('torres').insert(torre);
+    async crearAgrupacion({ id_bloque, numero, nombre }) {
+      const { error } = await client.from('agrupaciones').insert({ id: `${id_bloque}-${numero}`, id_bloque, numero, nombre });
+      if (error) throw error;
+    },
+    async actualizarAgrupacion(id, cambios) {
+      const { error } = await client.from('agrupaciones').update(cambios).eq('id', id);
+      if (error) throw error;
+    },
+    async listarTorres(idAgrupacion) {
+      let q = client.from('torres').select('*').order('letra_torre');
+      if (idAgrupacion) q = q.eq('id_agrupacion', idAgrupacion);
+      const { data, error } = await q;
+      if (error) throw error;
+      return data;
+    },
+    async crearTorre({ id_bloque, id_agrupacion, letra_torre }) {
+      const { error } = await client.from('torres').insert({ id: `${id_agrupacion}-${letra_torre}`, id_bloque, id_agrupacion, letra_torre });
       if (error) throw error;
     },
 
@@ -153,26 +177,115 @@
       }
     },
 
-    // Detecta hogares con id_torre vacío pero con la letra pegada al
-    // número en apartamento_unidad (ej. "3B02" -> "B"). No hace red,
-    // trabaja sobre un arreglo de hogares ya cargado.
-    detectarTorresFaltantes(hogares) {
-      const patron = /^\d+([A-Za-z])/;
-      return hogares
-        .filter((h) => !h.id_torre)
-        .map((h) => {
-          const m = patron.exec(h.apartamento_unidad || '');
-          return m ? { id: h.id, idBloque: h.id_bloque, apto: h.apartamento_unidad, jefe: h.nombre_jefe_hogar, letra: m[1].toUpperCase() } : null;
-        })
-        .filter(Boolean);
+    // Compara el censo maestro real (sector+agrupación+torre+apto+jefe,
+    // ver js/seed-hogares.js) contra los hogares ya cargados en Supabase, y
+    // decide para cada fila del maestro si corresponde a un hogar existente
+    // (actualizar su sector/agrupación/torre/es_lider), si hay que crearlo
+    // de cero, si hay más de un candidato posible (revisión manual) o si
+    // falta el sector en el propio maestro y por eso no se puede crear
+    // solo (ej. "Wilson Soto"). No hace red ni escribe nada — solo arma la
+    // vista previa. El emparejamiento prueba, en orden, apto+jefe, luego
+    // solo jefe, luego solo teléfono, todo dentro del mismo bloque, porque
+    // el censo ya importado trae algunos aptos corruptos por Excel que la
+    // hoja maestra ya no tiene (no se puede emparejar solo por apto).
+    reconciliarCensoMaestro(hogaresActuales, filasMaestro) {
+      const actualizaciones = [];
+      const nuevos = [];
+      const ambiguos = [];
+      const pendientes = [];
+
+      filasMaestro.forEach((fila) => {
+        const enBloque = fila.bloque ? hogaresActuales.filter((h) => h.id_bloque === fila.bloque) : [];
+        let candidatos = [];
+
+        if (fila.bloque) {
+          if (normApto(fila.apto)) {
+            candidatos = enBloque.filter((h) => normApto(h.apartamento_unidad) === normApto(fila.apto) && normNombre(h.nombre_jefe_hogar) === normNombre(fila.jefe_hogar));
+          }
+          if (candidatos.length === 0 && normNombre(fila.jefe_hogar)) {
+            candidatos = enBloque.filter((h) => normNombre(h.nombre_jefe_hogar) === normNombre(fila.jefe_hogar));
+          }
+          if (candidatos.length === 0 && normTel(fila.telefono)) {
+            candidatos = enBloque.filter((h) => normTel(h.telefono) === normTel(fila.telefono));
+          }
+        } else if (normNombre(fila.jefe_hogar)) {
+          candidatos = hogaresActuales.filter((h) => normNombre(h.nombre_jefe_hogar) === normNombre(fila.jefe_hogar));
+        }
+
+        if (candidatos.length === 1) actualizaciones.push({ hogar: candidatos[0], fila });
+        else if (candidatos.length > 1) ambiguos.push({ fila, candidatos });
+        else if (!fila.bloque) pendientes.push(fila);
+        else nuevos.push(fila);
+      });
+
+      return { actualizaciones, nuevos, ambiguos, pendientes };
     },
-    async corregirTorresFaltantes(cambios) {
-      let corregidos = 0;
-      for (const c of cambios) {
-        await this.actualizarHogar(c.id, { id_torre: c.letra });
-        corregidos++;
+
+    // Upsert del catálogo agrupaciones/torres a partir de las combinaciones
+    // sector+agrupación+torre presentes en las filas que se van a aplicar.
+    async sincronizarCatalogoAgrupacionesYTorres(filas) {
+      const agrupacionesMap = new Map();
+      const torresMap = new Map();
+      filas.forEach((f) => {
+        if (!f.bloque || !f.agrupacion) return;
+        const idAgrupacion = `${f.bloque}-${f.agrupacion}`;
+        if (!agrupacionesMap.has(idAgrupacion)) {
+          agrupacionesMap.set(idAgrupacion, { id: idAgrupacion, id_bloque: f.bloque, numero: f.agrupacion });
+        }
+        if (f.torre) {
+          const idTorre = `${idAgrupacion}-${f.torre}`;
+          if (!torresMap.has(idTorre)) {
+            torresMap.set(idTorre, { id: idTorre, id_bloque: f.bloque, id_agrupacion: idAgrupacion, letra_torre: f.torre });
+          }
+        }
+      });
+      const agrupaciones = Array.from(agrupacionesMap.values());
+      const torres = Array.from(torresMap.values());
+      if (agrupaciones.length) {
+        const { error } = await client.from('agrupaciones').upsert(agrupaciones, { onConflict: 'id' });
+        if (error) throw error;
       }
-      return corregidos;
+      if (torres.length) {
+        const { error } = await client.from('torres').upsert(torres, { onConflict: 'id' });
+        if (error) throw error;
+      }
+    },
+
+    // Aplica solo lo que ya se confirmó en la vista previa de
+    // reconciliarCensoMaestro (actualizaciones + nuevos; ambiguos y
+    // pendientes se quedan siempre para revisión manual).
+    async aplicarSincronizacionCensoMaestro({ actualizaciones, nuevos }, idLider) {
+      await this.sincronizarCatalogoAgrupacionesYTorres([...actualizaciones.map((a) => a.fila), ...nuevos]);
+
+      for (const { hogar, fila } of actualizaciones) {
+        await this.actualizarHogar(hogar.id, {
+          id_agrupacion: fila.bloque && fila.agrupacion ? `${fila.bloque}-${fila.agrupacion}` : null,
+          id_torre: fila.torre || null,
+          es_lider: !!fila.es_lider
+        });
+      }
+
+      const lote = nuevos.map((fila) => ({
+        id_bloque: fila.bloque,
+        id_agrupacion: fila.bloque && fila.agrupacion ? `${fila.bloque}-${fila.agrupacion}` : null,
+        id_torre: fila.torre || null,
+        apartamento_unidad: fila.apto || '',
+        nombre_jefe_hogar: fila.jefe_hogar || '(Sin nombre)',
+        telefono: fila.telefono || '',
+        legacy_ninos_sin_sexo: fila.legacy_ninos ?? null,
+        legacy_adultos_sin_sexo: fila.legacy_adultos ?? null,
+        es_lider: !!fila.es_lider,
+        censo_inicial_importado: true,
+        lider_que_censo: idLider,
+        observaciones: fila.observaciones ? `Censo maestro. ${fila.observaciones}` : 'Censo maestro.'
+      }));
+      const TAM_LOTE = 25;
+      for (let i = 0; i < lote.length; i += TAM_LOTE) {
+        const { error } = await client.from('hogares').insert(lote.slice(i, i + TAM_LOTE));
+        if (error) throw error;
+      }
+
+      return { actualizados: actualizaciones.length, creados: lote.length };
     },
 
     // Agrupa hogares por bloque + apto + jefe de hogar (mismo criterio que
@@ -190,51 +303,6 @@
         grupos.get(clave).push(h);
       });
       return Array.from(grupos.values()).filter((g) => g.length > 1);
-    },
-
-    async existeHogarImportado(bloque, apto, jefe) {
-      const { data, error } = await client
-        .from('hogares')
-        .select('id')
-        .eq('id_bloque', bloque)
-        .eq('apartamento_unidad', apto || '')
-        .eq('nombre_jefe_hogar', jefe || '')
-        .limit(1);
-      if (error) throw error;
-      return data.length > 0;
-    },
-    async importarHogaresIniciales(filas, idLider, onProgreso) {
-      let importados = 0;
-      let omitidos = 0;
-      const lote = [];
-      const TAM_LOTE = 25;
-
-      async function volcarLote(self) {
-        if (!lote.length) return;
-        const { error } = await client.from('hogares').insert(lote.splice(0, lote.length));
-        if (error) throw error;
-      }
-
-      for (const h of filas) {
-        const yaExiste = await this.existeHogarImportado(h.bloque, h.apto, h.jefe_hogar);
-        if (yaExiste) { omitidos++; if (onProgreso) onProgreso(importados, omitidos, filas.length); continue; }
-        lote.push({
-          id_bloque: h.bloque,
-          apartamento_unidad: h.apto || '',
-          nombre_jefe_hogar: h.jefe_hogar || '(Sin nombre)',
-          telefono: h.telefono || '',
-          legacy_ninos_sin_sexo: h.legacy_ninos ?? null,
-          legacy_adultos_sin_sexo: h.legacy_adultos ?? null,
-          censo_inicial_importado: true,
-          lider_que_censo: idLider,
-          observaciones: h.observaciones ? `Censo inicial (importado). ${h.observaciones}` : 'Censo inicial (importado).'
-        });
-        importados++;
-        if (lote.length >= TAM_LOTE) await volcarLote(this);
-        if (onProgreso) onProgreso(importados, omitidos, filas.length);
-      }
-      await volcarLote(this);
-      return { importados, omitidos };
     },
 
     // ---------------------------------------------------------------

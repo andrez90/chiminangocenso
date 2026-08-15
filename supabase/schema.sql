@@ -741,5 +741,196 @@ alter table bloques add column if not exists agrupacion text;
 create index if not exists idx_bloques_agrupacion on bloques(agrupacion);
 
 -- =====================================================================
+-- MIGRACIÓN v4 — jerarquía real Sector → Agrupación → Torre → Apto.
+-- "Bloque" (id_bloque, tabla bloques) ES el Sector; el texto visible en la
+-- app pasa a decir "Sector" pero la columna/tabla no se renombra para no
+-- arriesgar RLS y datos ya creados. La "agrupación" de la migración v3 era
+-- solo una etiqueta plana sobre el bloque — se reemplaza aquí por una
+-- entidad real de la que dependen las torres, porque una letra de torre
+-- NO es global: "Torre A" solo existe dentro de una agrupación y un sector
+-- específicos, y se repite en otras agrupaciones/sectores como algo
+-- distinto.
+-- =====================================================================
+
+alter table bloques drop column if exists agrupacion;
+
+-- Agrupaciones dentro de un sector (cada sector tiene las suyas propias,
+-- no se comparten). id = "<id_bloque>-<numero>", ej. "3-1".
+create table if not exists agrupaciones (
+  id          text primary key,
+  id_bloque   text not null references bloques(id) on delete cascade,
+  numero      text not null,
+  nombre      text,
+  created_at  timestamptz not null default now(),
+  unique (id_bloque, numero)
+);
+
+-- Las torres ahora dependen de la agrupación (y, a través de ella, del
+-- sector). id_bloque se mantiene denormalizado en torres para no romper
+-- las políticas de lectura que ya filtran por bloque.
+alter table torres add column if not exists id_agrupacion text references agrupaciones(id);
+alter table torres drop constraint if exists torres_id_bloque_letra_torre_key;
+alter table torres drop constraint if exists torres_id_agrupacion_letra_torre_key;
+alter table torres add constraint torres_id_agrupacion_letra_torre_key unique (id_agrupacion, letra_torre);
+
+-- Los hogares ahora registran su agrupación real (además del bloque/sector
+-- y la torre que ya tenían).
+alter table hogares add column if not exists id_agrupacion text references agrupaciones(id);
+create index if not exists idx_hogares_agrupacion on hogares(id_agrupacion);
+
+alter table agrupaciones enable row level security;
+
+-- ===== agrupaciones ===== (mismo patrón que torres). Un líder de torre
+-- pura (bloques_permitidos vacío) también debe poder leer las
+-- agrupaciones/torres de SU sector, derivado del segmento de sector en
+-- torres_permitidas — si no, no vería ni las opciones del formulario.
+drop policy if exists agrupaciones_select on agrupaciones;
+create policy agrupaciones_select on agrupaciones
+  for select using (
+    soy_coordinador() or id_bloque = any(mis_bloques())
+    or id_bloque = any(select split_part(t, '-', 1) from unnest(mis_torres()) as t)
+  );
+
+drop policy if exists torres_select on torres;
+create policy torres_select on torres
+  for select using (
+    soy_coordinador() or id_bloque = any(mis_bloques())
+    or id_bloque = any(select split_part(t, '-', 1) from unnest(mis_torres()) as t)
+  );
+drop policy if exists agrupaciones_write_coordinador on agrupaciones;
+create policy agrupaciones_write_coordinador on agrupaciones
+  for insert with check (soy_coordinador());
+drop policy if exists agrupaciones_update_coordinador on agrupaciones;
+create policy agrupaciones_update_coordinador on agrupaciones
+  for update using (soy_coordinador()) with check (soy_coordinador());
+drop policy if exists agrupaciones_delete_coordinador on agrupaciones;
+create policy agrupaciones_delete_coordinador on agrupaciones
+  for delete using (soy_coordinador());
+
+-- ---------------------------------------------------------------------
+-- Permiso de líder por torre: ahora la clave es "<id_agrupacion>-<letra>"
+-- en vez de "<id_bloque>-<letra>", porque id_agrupacion ya incluye el
+-- bloque (ej. "3-1") — no hace falta un join extra para tener la clave
+-- completa. IMPORTANTE: cualquier torres_permitidas asignado antes de esta
+-- migración quedó con el formato viejo y ya no calza con ninguna torre
+-- real; hay que reasignarlo desde Administración.
+-- ---------------------------------------------------------------------
+drop policy if exists hogares_select on hogares;
+create policy hogares_select on hogares
+  for select using (
+    soy_coordinador() or id_bloque = any(mis_bloques())
+    or (coalesce(id_agrupacion,'') || '-' || coalesce(id_torre,'')) = any(mis_torres())
+  );
+
+drop policy if exists hogares_insert on hogares;
+create policy hogares_insert on hogares
+  for insert with check (
+    soy_coordinador() or id_bloque = any(mis_bloques())
+    or (coalesce(id_agrupacion,'') || '-' || coalesce(id_torre,'')) = any(mis_torres())
+  );
+
+drop policy if exists hogares_update on hogares;
+create policy hogares_update on hogares
+  for update using (
+    soy_coordinador() or id_bloque = any(mis_bloques())
+    or (coalesce(id_agrupacion,'') || '-' || coalesce(id_torre,'')) = any(mis_torres())
+  )
+  with check (
+    soy_coordinador() or id_bloque = any(mis_bloques())
+    or (coalesce(id_agrupacion,'') || '-' || coalesce(id_torre,'')) = any(mis_torres())
+  );
+
+drop policy if exists mascotas_select on mascotas;
+create policy mascotas_select on mascotas
+  for select using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = mascotas.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists mascotas_write on mascotas;
+create policy mascotas_write on mascotas
+  for insert with check (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = mascotas.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists mascotas_update on mascotas;
+create policy mascotas_update on mascotas
+  for update using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = mascotas.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists mascotas_delete on mascotas;
+create policy mascotas_delete on mascotas
+  for delete using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = mascotas.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+
+drop policy if exists necesidades_select on necesidades;
+create policy necesidades_select on necesidades
+  for select using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = necesidades.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists necesidades_write on necesidades;
+create policy necesidades_write on necesidades
+  for insert with check (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = necesidades.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists necesidades_update on necesidades;
+create policy necesidades_update on necesidades
+  for update using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = necesidades.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+
+drop policy if exists miembros_hogar_select on miembros_hogar;
+create policy miembros_hogar_select on miembros_hogar
+  for select using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = miembros_hogar.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists miembros_hogar_write on miembros_hogar;
+create policy miembros_hogar_write on miembros_hogar
+  for insert with check (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = miembros_hogar.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists miembros_hogar_update on miembros_hogar;
+create policy miembros_hogar_update on miembros_hogar
+  for update using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = miembros_hogar.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists miembros_hogar_delete on miembros_hogar;
+create policy miembros_hogar_delete on miembros_hogar
+  for delete using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = miembros_hogar.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (coalesce(h.id_agrupacion,'') || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+
+-- =====================================================================
 -- Fin del esquema. Sigue con seed.sql para cargar catálogo y bloques.
 -- =====================================================================
