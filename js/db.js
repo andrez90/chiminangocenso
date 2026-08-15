@@ -56,9 +56,11 @@
       return data;
     },
 
-    // Crea un líder nuevo SIN afectar la sesión del coordinador: usa un
-    // cliente Supabase temporal solo para el signUp.
-    async crearLider({ nombre, telefono, pin, bloques, torres }) {
+    // Crea el usuario de autenticación SIN afectar la sesión del
+    // coordinador: usa un cliente Supabase temporal solo para el signUp.
+    // Devuelve el id del usuario nuevo; crearLider/crearCoordinador arman
+    // el perfil encima de esto.
+    async _crearUsuarioAuth(telefono, pin) {
       const temp = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
         auth: { persistSession: false, autoRefreshToken: false }
       });
@@ -66,9 +68,13 @@
       const { data, error } = await temp.auth.signUp({ email, password: pin });
       if (error) throw error;
       if (!data.user) throw new Error('No se pudo crear el usuario. Verifica que la confirmación de correo esté deshabilitada en Supabase (Authentication → Settings).');
+      return data.user.id;
+    },
 
+    async crearLider({ nombre, telefono, pin, bloques, torres }) {
+      const userId = await this._crearUsuarioAuth(telefono, pin);
       const { error: errPerfil } = await client.from('perfiles').insert({
-        id: data.user.id,
+        id: userId,
         nombre,
         telefono,
         rol: 'lider_bloque',
@@ -76,7 +82,29 @@
         torres_permitidas: torres || []
       });
       if (errPerfil) throw errPerfil;
-      return data.user.id;
+      return userId;
+    },
+
+    // Crea otro coordinador (acceso total: todos los sectores, entregas,
+    // inventario y administración). A diferencia de un líder, no lleva
+    // bloques/torres asignados porque el rol "coordinador" ya lo ve todo
+    // (así lo definen soy_coordinador()/las policies de RLS).
+    async crearCoordinador({ nombre, telefono, pin }) {
+      const userId = await this._crearUsuarioAuth(telefono, pin);
+      const { error: errPerfil } = await client.from('perfiles').insert({
+        id: userId,
+        nombre,
+        telefono,
+        rol: 'coordinador'
+      });
+      if (errPerfil) throw errPerfil;
+      return userId;
+    },
+
+    async listarCoordinadores() {
+      const { data, error } = await client.from('perfiles').select('*').eq('rol', 'coordinador').order('nombre');
+      if (error) throw error;
+      return data;
     },
 
     pinAleatorio() {
@@ -161,6 +189,18 @@
     async actualizarLider(id, cambios) {
       const { error } = await client.from('perfiles').update(cambios).eq('id', id);
       if (error) throw error;
+    },
+    // Resetea el PIN de un líder que lo olvidó. Corre en una Edge Function
+    // (supabase/functions/reset-lider-pin) porque cambiar la contraseña de
+    // OTRO usuario requiere la llave service_role, que nunca debe vivir en
+    // el navegador — el frontend solo llama a la función ya desplegada.
+    async resetearPinLider(liderId, nuevoPin) {
+      const { data, error } = await client.functions.invoke('reset-lider-pin', {
+        body: { lider_id: liderId, nuevo_pin: nuevoPin }
+      });
+      if (error) throw error;
+      if (data && data.error) throw new Error(data.error);
+      return data;
     },
 
     // ---------------------------------------------------------------

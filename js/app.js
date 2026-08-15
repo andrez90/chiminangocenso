@@ -1246,8 +1246,8 @@
   // ADMINISTRACIÓN — sectores / agrupaciones / torres / líderes (coordinador)
   // =====================================================================
   async function vistaAdministracion(root) {
-    const [bloques, agrupaciones, torres, lideres, hogares] = await Promise.all([
-      DB.listarBloques(), DB.listarAgrupaciones(), DB.listarTorres(), DB.listarLideres(), DB.listarHogares()
+    const [bloques, agrupaciones, torres, lideres, coordinadores, hogares] = await Promise.all([
+      DB.listarBloques(), DB.listarAgrupaciones(), DB.listarTorres(), DB.listarLideres(), DB.listarCoordinadores(), DB.listarHogares()
     ]);
 
     root.innerHTML = `
@@ -1287,10 +1287,19 @@
       </div>
 
       <div class="card">
+        <div class="card-header"><h2>Administradores</h2><button class="btn btn-sm btn-secondary" id="btn-nuevo-admin" type="button">+ Administrador</button></div>
+        <p class="text-muted text-sm">Un administrador (coordinador) ve y edita todo: todos los sectores, entregas, inventario y esta misma pantalla de Administración. Créalos solo para personas de confianza total.</p>
+        <div class="table-scroll"><table class="data-table">
+          <thead><tr><th>Nombre</th><th>Teléfono</th><th>Estado</th><th></th></tr></thead>
+          <tbody>${coordinadores.map((c) => `<tr><td>${esc(c.nombre)}</td><td>${telLinkHTML(c.telefono)}</td><td>${c.activo ? '<span class="badge badge-success">Activo</span>' : '<span class="badge badge-neutral">Inactivo</span>'}</td><td><button class="btn btn-sm btn-ghost" data-resetear-pin="${esc(c.id)}" data-nombre-lider="${esc(c.nombre)}" type="button">Resetear PIN</button></td></tr>`).join('') || '<tr><td colspan="4" class="text-muted">Sin administradores adicionales todavía.</td></tr>'}</tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
         <div class="card-header"><h2>Líderes</h2><button class="btn btn-sm btn-secondary" id="btn-nuevo-lider" type="button">+ Líder</button></div>
         <div class="table-scroll"><table class="data-table">
-          <thead><tr><th>Nombre</th><th>Teléfono</th><th>Torres</th><th>Sectores</th><th>Estado</th></tr></thead>
-          <tbody>${lideres.map((l) => `<tr><td>${esc(l.nombre)}</td><td>${telLinkHTML(l.telefono)}</td><td>${(l.torres_permitidas || []).join(', ') || '—'}</td><td>${(l.bloques_permitidos || []).join(', ') || '—'}</td><td>${l.activo ? '<span class="badge badge-success">Activo</span>' : '<span class="badge badge-neutral">Inactivo</span>'}</td></tr>`).join('') || '<tr><td colspan="5" class="text-muted">Sin líderes registrados todavía.</td></tr>'}</tbody>
+          <thead><tr><th>Nombre</th><th>Teléfono</th><th>Torres</th><th>Sectores</th><th>Estado</th><th></th></tr></thead>
+          <tbody>${lideres.map((l) => `<tr><td>${esc(l.nombre)}</td><td>${telLinkHTML(l.telefono)}</td><td>${(l.torres_permitidas || []).join(', ') || '—'}</td><td>${(l.bloques_permitidos || []).join(', ') || '—'}</td><td>${l.activo ? '<span class="badge badge-success">Activo</span>' : '<span class="badge badge-neutral">Inactivo</span>'}</td><td><button class="btn btn-sm btn-ghost" data-resetear-pin="${esc(l.id)}" data-nombre-lider="${esc(l.nombre)}" type="button">Resetear PIN</button></td></tr>`).join('') || '<tr><td colspan="6" class="text-muted">Sin líderes registrados todavía.</td></tr>'}</tbody>
         </table></div>
       </div>
 
@@ -1344,7 +1353,20 @@
       } catch (ex) { toast(errorAmigable(ex), 'error'); }
     }));
 
+    qs('#btn-nuevo-admin', root).addEventListener('click', () => abrirModalNuevoAdministrador());
+
     qs('#btn-nuevo-lider', root).addEventListener('click', () => abrirModalNuevoLider(torres, agrupaciones));
+
+    qsa('[data-resetear-pin]', root).forEach((btn) => btn.addEventListener('click', async () => {
+      const nombreLider = btn.dataset.nombreLider;
+      const ok = await confirmar(`Se le va a asignar un PIN nuevo a ${nombreLider}. El PIN anterior deja de servir de inmediato. ¿Continuar?`, { textoOk: 'Resetear PIN' });
+      if (!ok) return;
+      const nuevoPin = DB.pinAleatorio();
+      try {
+        await DB.resetearPinLider(btn.dataset.resetearPin, nuevoPin);
+        await confirmar(`Nuevo PIN de ${nombreLider}: ${nuevoPin} — cópialo ahora, no se puede volver a consultar después de cerrar este mensaje.`, { titulo: 'PIN actualizado', textoOk: 'Ya lo copié' });
+      } catch (ex) { toast(errorAmigable(ex), 'error'); }
+    }));
 
     qs('#btn-detectar-lideres', root).addEventListener('click', () => {
       const region = qs('#lideres-preview-region', root);
@@ -1508,6 +1530,43 @@
       try {
         await DB.crearLider({ nombre, telefono, pin, bloques: [], torres: Array.from(torresElegidas) });
         toast('Líder creado. Ya puede iniciar sesión con su teléfono y PIN.', 'success');
+        backdrop.remove();
+        router();
+      } catch (ex) { err.textContent = errorAmigable(ex); }
+    });
+  }
+
+  function abrirModalNuevoAdministrador() {
+    const backdrop = h(`
+      <div class="modal-backdrop" role="dialog" aria-modal="true" aria-label="Nuevo administrador">
+        <div class="modal-box">
+          <h3>Nuevo administrador</h3>
+          <p class="text-muted text-sm">⚠️ Un administrador ve y edita <strong>todo</strong>: todos los sectores, entregas, inventario y esta misma pantalla. Créalo solo para alguien de total confianza.</p>
+          <div class="field"><label for="na-nombre">Nombre completo</label><input id="na-nombre" type="text"></div>
+          <div class="field"><label for="na-tel">Teléfono (será su usuario)</label><input id="na-tel" type="tel" inputmode="numeric"></div>
+          <div class="field"><label for="na-pin">PIN de 6 dígitos</label><input id="na-pin" type="password" inputmode="numeric" maxlength="6"></div>
+          <p class="error-text" id="na-error" role="alert" aria-live="polite"></p>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-ghost" data-cancel>Cancelar</button>
+            <button type="button" class="btn btn-primary" id="na-guardar">Crear administrador</button>
+          </div>
+        </div>
+      </div>`);
+    document.body.appendChild(backdrop);
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop || e.target.closest('[data-cancel]')) backdrop.remove(); });
+    qs('#na-guardar', backdrop).addEventListener('click', async () => {
+      const nombre = qs('#na-nombre', backdrop).value.trim();
+      const telefono = qs('#na-tel', backdrop).value.trim();
+      const pin = qs('#na-pin', backdrop).value.trim();
+      const err = qs('#na-error', backdrop);
+      if (!nombre || !telefono || pin.length !== 6) {
+        err.textContent = 'Completa nombre, teléfono y un PIN de 6 dígitos.'; return;
+      }
+      const ok = await confirmar(`¿Confirmas que quieres darle acceso total de administrador a ${nombre}?`, { titulo: 'Confirmar administrador', textoOk: 'Sí, crear administrador', peligroso: true });
+      if (!ok) return;
+      try {
+        await DB.crearCoordinador({ nombre, telefono, pin });
+        toast('Administrador creado. Ya puede iniciar sesión con su teléfono y PIN.', 'success');
         backdrop.remove();
         router();
       } catch (ex) { err.textContent = errorAmigable(ex); }
