@@ -433,6 +433,9 @@ input:disabled, select:disabled, textarea:disabled { background: var(--color-sur
 .hogar-row .info-side { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
 .hogar-row--lider { background: var(--color-warning-light); border-color: var(--color-warning); }
 
+.tel-link { color: var(--color-primary-dark); font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.tel-link:hover { color: var(--color-primary); }
+
 .hogar-groups { display: flex; flex-direction: column; gap: var(--space-2); }
 .hogar-group {
   background: var(--color-surface);

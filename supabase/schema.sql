@@ -733,5 +733,13 @@ create policy afectaciones_catalogo_delete_coordinador on afectaciones_catalogo
   for delete using (soy_coordinador());
 
 -- =====================================================================
+-- MIGRACIÓN v3 — agrupación de bloques (zona administrativa por encima
+-- del bloque). La detección de hogares repetidos no necesita tabla ni
+-- columna nueva: se calcula en el cliente sobre los hogares ya cargados.
+-- =====================================================================
+alter table bloques add column if not exists agrupacion text;
+create index if not exists idx_bloques_agrupacion on bloques(agrupacion);
+
+-- =====================================================================
 -- Fin del esquema. Sigue con seed.sql para cargar catálogo y bloques.
 -- =====================================================================

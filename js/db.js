@@ -82,6 +82,10 @@
       const { error } = await client.from('bloques').insert(bloque);
       if (error) throw error;
     },
+    async actualizarBloque(id, cambios) {
+      const { error } = await client.from('bloques').update(cambios).eq('id', id);
+      if (error) throw error;
+    },
     async listarTorres(idBloque) {
       let q = client.from('torres').select('*').order('letra_torre');
       if (idBloque) q = q.eq('id_bloque', idBloque);
@@ -169,6 +173,23 @@
         corregidos++;
       }
       return corregidos;
+    },
+
+    // Agrupa hogares por bloque + apto + jefe de hogar (mismo criterio que
+    // ya usa la importación inicial para no duplicar) y regresa solo los
+    // grupos con más de un hogar. Ignora jefes de hogar vacíos para no
+    // marcar como "duplicados" todos los registros sin nombre. No hace
+    // red, trabaja sobre un arreglo de hogares ya cargado.
+    detectarDuplicados(hogares) {
+      const grupos = new Map();
+      hogares.forEach((h) => {
+        const jefe = (h.nombre_jefe_hogar || '').trim().toLowerCase();
+        if (!jefe) return;
+        const clave = `${h.id_bloque}|${(h.apartamento_unidad || '').trim().toLowerCase()}|${jefe}`;
+        if (!grupos.has(clave)) grupos.set(clave, []);
+        grupos.get(clave).push(h);
+      });
+      return Array.from(grupos.values()).filter((g) => g.length > 1);
     },
 
     async existeHogarImportado(bloque, apto, jefe) {
