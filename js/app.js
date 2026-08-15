@@ -1297,6 +1297,7 @@
       <div class="card">
         <div class="card-header"><h2>Crear líderes del censo maestro</h2></div>
         <p class="text-muted text-sm">Busca hogares marcados como líder (con su sector/agrupación/torre ya resueltos y teléfono conocido) que todavía no tienen cuenta de acceso, y te ofrece crearla con un PIN generado para cada uno.</p>
+        <p class="text-muted text-sm"><strong>Requisito:</strong> corre primero "Sincronizar censo maestro" (arriba) y aplica los cambios — sin eso, ningún hogar queda marcado como líder todavía.</p>
         <button class="btn btn-secondary mt-4" id="btn-detectar-lideres" type="button">Detectar líderes pendientes de cuenta</button>
         <div id="lideres-preview-region" class="mt-4"></div>
       </div>`;
@@ -1346,17 +1347,23 @@
     qs('#btn-nuevo-lider', root).addEventListener('click', () => abrirModalNuevoLider(torres, agrupaciones));
 
     qs('#btn-detectar-lideres', root).addEventListener('click', () => {
+      const region = qs('#lideres-preview-region', root);
+      const hogaresLider = hogares.filter((h) => h.es_lider);
+      if (hogaresLider.length === 0) {
+        region.innerHTML = '<p class="text-muted text-sm">⚠️ No hay ningún hogar marcado como líder todavía. Corre primero "Sincronizar censo maestro" (arriba) y aplica los cambios — ese paso es el que marca es_lider y resuelve la torre de cada líder; recién después va a haber candidatos aquí.</p>';
+        return;
+      }
+
       const telefonosConCuenta = new Set(lideres.map((l) => normTelSimple(l.telefono)));
       const candidatos = [];
       const sinDatos = [];
-      hogares.filter((h) => h.es_lider).forEach((h) => {
+      hogaresLider.forEach((h) => {
         const torreId = h.id_agrupacion && h.id_torre ? `${h.id_agrupacion}-${h.id_torre}` : null;
         if (!torreId || !h.telefono) { sinDatos.push(h); return; }
         if (telefonosConCuenta.has(normTelSimple(h.telefono))) return; // ya tiene cuenta
         candidatos.push({ nombre: h.nombre_jefe_hogar || '(Sin nombre)', telefono: h.telefono, torreId });
       });
 
-      const region = qs('#lideres-preview-region', root);
       if (candidatos.length === 0 && sinDatos.length === 0) {
         region.innerHTML = '<p class="text-muted text-sm">Todos los hogares marcados como líder ya tienen cuenta de acceso.</p>';
         return;
