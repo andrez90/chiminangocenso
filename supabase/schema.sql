@@ -518,5 +518,220 @@ create policy evidencias_borrado_coordinador on storage.objects
   for delete to authenticated using (bucket_id = 'evidencias' and soy_coordinador());
 
 -- =====================================================================
+-- MIGRACIÓN v2 — líderes por torre, corrección de torres, composición
+-- nominal del hogar, catálogo de afectaciones y entregas grupales.
+-- Seguro de re-ejecutar junto con el resto del archivo.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- Líder acotado a torre(s) específicas (además del bloque, que se deja
+-- como fallback para líderes ya creados). Cada valor tiene el mismo
+-- formato que torres.id: "<id_bloque>-<letra_torre>", ej. "7-B".
+-- ---------------------------------------------------------------------
+alter table perfiles add column if not exists torres_permitidas text[] not null default '{}';
+
+create or replace function public.mis_torres()
+returns text[]
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(torres_permitidas, '{}'::text[]) from perfiles where id = auth.uid();
+$$;
+
+-- ---------------------------------------------------------------------
+-- Marca si el jefe del hogar es líder de torre (para resaltar la card
+-- y poder filtrar "solo líderes" en el censo).
+-- ---------------------------------------------------------------------
+alter table hogares add column if not exists es_lider boolean not null default false;
+
+-- ---------------------------------------------------------------------
+-- Integrantes nombrados del hogar (opcional, complementa los contadores
+-- de composición que se mantienen en hogares para no romper reportes).
+-- ---------------------------------------------------------------------
+create table if not exists miembros_hogar (
+  id            uuid primary key default gen_random_uuid(),
+  id_hogar      uuid not null references hogares(id) on delete cascade,
+  categoria     text not null check (categoria in ('mujer','hombre','nina','nino','abuela','abuelo')),
+  nombre        text,
+  afectaciones  text[] not null default '{}',
+  created_at    timestamptz not null default now()
+);
+create index if not exists idx_miembros_hogar_hogar on miembros_hogar(id_hogar);
+
+-- ---------------------------------------------------------------------
+-- Catálogo editable de afectaciones de salud (mismo patrón que
+-- tipos_ayuda), para el select múltiple por integrante.
+-- ---------------------------------------------------------------------
+create table if not exists afectaciones_catalogo (
+  id       uuid primary key default gen_random_uuid(),
+  nombre   text not null unique,
+  orden    integer not null default 0,
+  activo   boolean not null default true
+);
+
+insert into afectaciones_catalogo (nombre, orden) values
+  ('Discapacidad física', 1),
+  ('Discapacidad cognitiva', 2),
+  ('Enfermedad crónica', 3),
+  ('Movilidad reducida', 4),
+  ('Embarazo', 5),
+  ('Adulto mayor dependiente', 6),
+  ('Salud mental', 7),
+  ('Otra', 8)
+on conflict (nombre) do nothing;
+
+-- ---------------------------------------------------------------------
+-- Entregas grupales a un líder/torre completa (ej. "30 desayunos a la
+-- líder de la torre A"), además de las entregas por hogar existentes.
+-- ---------------------------------------------------------------------
+alter table entregas alter column id_hogar drop not null;
+alter table entregas add column if not exists es_entrega_grupal boolean not null default false;
+alter table entregas drop constraint if exists entregas_destino_check;
+alter table entregas add constraint entregas_destino_check
+  check (id_hogar is not null or recibido_por_lider is not null);
+
+-- ---------------------------------------------------------------------
+-- RLS: extender hogares/mascotas/necesidades para el permiso por torre,
+-- habilitar RLS en las tablas nuevas.
+-- ---------------------------------------------------------------------
+alter table miembros_hogar enable row level security;
+alter table afectaciones_catalogo enable row level security;
+
+drop policy if exists hogares_select on hogares;
+create policy hogares_select on hogares
+  for select using (
+    soy_coordinador() or id_bloque = any(mis_bloques())
+    or (id_bloque || '-' || coalesce(id_torre,'')) = any(mis_torres())
+  );
+
+drop policy if exists hogares_insert on hogares;
+create policy hogares_insert on hogares
+  for insert with check (
+    soy_coordinador() or id_bloque = any(mis_bloques())
+    or (id_bloque || '-' || coalesce(id_torre,'')) = any(mis_torres())
+  );
+
+drop policy if exists hogares_update on hogares;
+create policy hogares_update on hogares
+  for update using (
+    soy_coordinador() or id_bloque = any(mis_bloques())
+    or (id_bloque || '-' || coalesce(id_torre,'')) = any(mis_torres())
+  )
+  with check (
+    soy_coordinador() or id_bloque = any(mis_bloques())
+    or (id_bloque || '-' || coalesce(id_torre,'')) = any(mis_torres())
+  );
+
+drop policy if exists mascotas_select on mascotas;
+create policy mascotas_select on mascotas
+  for select using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = mascotas.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists mascotas_write on mascotas;
+create policy mascotas_write on mascotas
+  for insert with check (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = mascotas.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists mascotas_update on mascotas;
+create policy mascotas_update on mascotas
+  for update using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = mascotas.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists mascotas_delete on mascotas;
+create policy mascotas_delete on mascotas
+  for delete using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = mascotas.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+
+drop policy if exists necesidades_select on necesidades;
+create policy necesidades_select on necesidades
+  for select using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = necesidades.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists necesidades_write on necesidades;
+create policy necesidades_write on necesidades
+  for insert with check (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = necesidades.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists necesidades_update on necesidades;
+create policy necesidades_update on necesidades
+  for update using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = necesidades.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+
+-- ===== miembros_hogar ===== (mismo criterio: heredan el permiso del hogar)
+drop policy if exists miembros_hogar_select on miembros_hogar;
+create policy miembros_hogar_select on miembros_hogar
+  for select using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = miembros_hogar.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists miembros_hogar_write on miembros_hogar;
+create policy miembros_hogar_write on miembros_hogar
+  for insert with check (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = miembros_hogar.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists miembros_hogar_update on miembros_hogar;
+create policy miembros_hogar_update on miembros_hogar
+  for update using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = miembros_hogar.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+drop policy if exists miembros_hogar_delete on miembros_hogar;
+create policy miembros_hogar_delete on miembros_hogar
+  for delete using (
+    soy_coordinador() or exists (
+      select 1 from hogares h where h.id = miembros_hogar.id_hogar
+        and (h.id_bloque = any(mis_bloques()) or (h.id_bloque || '-' || coalesce(h.id_torre,'')) = any(mis_torres()))
+    )
+  );
+
+-- ===== afectaciones_catalogo ===== (lectura para cualquier autenticado,
+-- escritura solo coordinador — igual que tipos_ayuda pero de lectura
+-- abierta porque los líderes también censan afectaciones)
+drop policy if exists afectaciones_catalogo_select on afectaciones_catalogo;
+create policy afectaciones_catalogo_select on afectaciones_catalogo
+  for select using (true);
+drop policy if exists afectaciones_catalogo_write_coordinador on afectaciones_catalogo;
+create policy afectaciones_catalogo_write_coordinador on afectaciones_catalogo
+  for insert with check (soy_coordinador());
+drop policy if exists afectaciones_catalogo_update_coordinador on afectaciones_catalogo;
+create policy afectaciones_catalogo_update_coordinador on afectaciones_catalogo
+  for update using (soy_coordinador()) with check (soy_coordinador());
+drop policy if exists afectaciones_catalogo_delete_coordinador on afectaciones_catalogo;
+create policy afectaciones_catalogo_delete_coordinador on afectaciones_catalogo
+  for delete using (soy_coordinador());
+
+-- =====================================================================
 -- Fin del esquema. Sigue con seed.sql para cargar catálogo y bloques.
 -- =====================================================================

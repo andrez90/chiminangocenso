@@ -49,7 +49,7 @@
 
     // Crea un líder nuevo SIN afectar la sesión del coordinador: usa un
     // cliente Supabase temporal solo para el signUp.
-    async crearLider({ nombre, telefono, pin, bloques }) {
+    async crearLider({ nombre, telefono, pin, bloques, torres }) {
       const temp = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
         auth: { persistSession: false, autoRefreshToken: false }
       });
@@ -63,7 +63,8 @@
         nombre,
         telefono,
         rol: 'lider_bloque',
-        bloques_permitidos: bloques
+        bloques_permitidos: bloques || [],
+        torres_permitidas: torres || []
       });
       if (errPerfil) throw errPerfil;
       return data.user.id;
@@ -115,7 +116,7 @@
       return data;
     },
     async obtenerHogar(id) {
-      const { data, error } = await client.from('hogares').select('*, mascotas(*)').eq('id', id).single();
+      const { data, error } = await client.from('hogares').select('*, mascotas(*), miembros_hogar(*)').eq('id', id).single();
       if (error) throw error;
       return data;
     },
@@ -138,6 +139,38 @@
         if (error) throw error;
       }
     },
+    async reemplazarMiembros(idHogar, miembros) {
+      const { error: errDel } = await client.from('miembros_hogar').delete().eq('id_hogar', idHogar);
+      if (errDel) throw errDel;
+      if (miembros && miembros.length) {
+        const filas = miembros.map((m) => ({ ...m, id_hogar: idHogar }));
+        const { error } = await client.from('miembros_hogar').insert(filas);
+        if (error) throw error;
+      }
+    },
+
+    // Detecta hogares con id_torre vacío pero con la letra pegada al
+    // número en apartamento_unidad (ej. "3B02" -> "B"). No hace red,
+    // trabaja sobre un arreglo de hogares ya cargado.
+    detectarTorresFaltantes(hogares) {
+      const patron = /^\d+([A-Za-z])/;
+      return hogares
+        .filter((h) => !h.id_torre)
+        .map((h) => {
+          const m = patron.exec(h.apartamento_unidad || '');
+          return m ? { id: h.id, idBloque: h.id_bloque, apto: h.apartamento_unidad, jefe: h.nombre_jefe_hogar, letra: m[1].toUpperCase() } : null;
+        })
+        .filter(Boolean);
+    },
+    async corregirTorresFaltantes(cambios) {
+      let corregidos = 0;
+      for (const c of cambios) {
+        await this.actualizarHogar(c.id, { id_torre: c.letra });
+        corregidos++;
+      }
+      return corregidos;
+    },
+
     async existeHogarImportado(bloque, apto, jefe) {
       const { data, error } = await client
         .from('hogares')
@@ -216,6 +249,25 @@
     },
     async actualizarTipoAyuda(id, cambios) {
       const { error } = await client.from('tipos_ayuda').update(cambios).eq('id', id);
+      if (error) throw error;
+    },
+
+    // ---------------------------------------------------------------
+    // Catálogo de afectaciones de salud
+    // ---------------------------------------------------------------
+    async listarAfectacionesCatalogo(soloActivos = true) {
+      let q = client.from('afectaciones_catalogo').select('*').order('orden');
+      if (soloActivos) q = q.eq('activo', true);
+      const { data, error } = await q;
+      if (error) throw error;
+      return data;
+    },
+    async crearAfectacion(afectacion) {
+      const { error } = await client.from('afectaciones_catalogo').insert(afectacion);
+      if (error) throw error;
+    },
+    async actualizarAfectacion(id, cambios) {
+      const { error } = await client.from('afectaciones_catalogo').update(cambios).eq('id', id);
       if (error) throw error;
     },
 

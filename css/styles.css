@@ -431,6 +431,31 @@ input:disabled, select:disabled, textarea:disabled { background: var(--color-sur
 .hogar-row .info-main .title { font-weight: 700; }
 .hogar-row .info-main .subtitle { font-size: 0.82rem; color: var(--color-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hogar-row .info-side { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
+.hogar-row--lider { background: var(--color-warning-light); border-color: var(--color-warning); }
+
+.hogar-groups { display: flex; flex-direction: column; gap: var(--space-2); }
+.hogar-group {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+}
+.hogar-group summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 700;
+}
+.hogar-group summary::-webkit-details-marker { display: none; }
+.hogar-group summary::before { content: '▸'; color: var(--color-text-muted); transition: transform 0.15s; }
+.hogar-group[open] summary::before { transform: rotate(90deg); }
+.hogar-group .hogar-list { margin-top: var(--space-3); }
+
+.miembros-categoria { margin-bottom: var(--space-4); }
+.miembros-categoria-titulo { font-size: 0.78rem; font-weight: 700; color: var(--color-text-muted); margin-bottom: var(--space-2); }
+.miembro-card { margin-bottom: var(--space-2); }
 
 .badge {
   display: inline-flex; align-items: center; gap: 4px;
