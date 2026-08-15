@@ -109,6 +109,17 @@
   function misBloques() { return state.perfil ? (state.perfil.bloques_permitidos || []) : []; }
   function misTorres() { return state.perfil ? (state.perfil.torres_permitidas || []) : []; }
   function claveTorre(h) { return `${h.id_bloque}-${h.id_torre || ''}`; }
+  // Letra de torre "efectiva": usa id_torre si ya está corregido en la
+  // base de datos, o la detecta pegada al número del apto (ej. "3B02" ->
+  // "B") mientras no se haya corregido. Solo para MOSTRAR opciones — el
+  // permiso real (RLS) sigue dependiendo de que id_torre quede corregido
+  // de verdad con el botón de Administración.
+  const PATRON_TORRE = /^\d+([A-Za-z])/;
+  function torreEfectiva(h) {
+    if (h.id_torre) return h.id_torre.toUpperCase();
+    const m = PATRON_TORRE.exec(h.apartamento_unidad || '');
+    return m ? m[1].toUpperCase() : null;
+  }
   function puedeVerHogar(h) {
     return esCoordinador() || misBloques().includes(h.id_bloque) || misTorres().includes(claveTorre(h));
   }
@@ -1233,9 +1244,19 @@
   }
 
   function abrirModalNuevoLider(hogares) {
-    const torresDisponibles = Array.from(new Set(
-      hogares.filter((h) => h.id_torre).map((h) => `${h.id_bloque}-${h.id_torre}`)
-    )).sort((a, b) => a.localeCompare(b, 'es'));
+    // Torres "reales" (id_torre ya corregido en la base de datos) vs.
+    // "detectadas" (todavía no corregidas, solo se infieren del apto).
+    const torresReales = new Set();
+    const torresDetectadas = new Set();
+    hogares.forEach((h) => {
+      const letra = torreEfectiva(h);
+      if (!letra) return;
+      const clave = `${h.id_bloque}-${letra}`;
+      (h.id_torre ? torresReales : torresDetectadas).add(clave);
+    });
+    const torresDisponibles = Array.from(new Set([...torresReales, ...torresDetectadas]))
+      .sort((a, b) => a.localeCompare(b, 'es'));
+    const hayDetectadasSinCorregir = Array.from(torresDetectadas).some((t) => !torresReales.has(t));
 
     const backdrop = h(`
       <div class="modal-backdrop" role="dialog" aria-modal="true" aria-label="Nuevo líder">
@@ -1244,11 +1265,13 @@
           <div class="field"><label for="nl-nombre">Nombre completo</label><input id="nl-nombre" type="text"></div>
           <div class="field"><label for="nl-tel">Teléfono (será su usuario)</label><input id="nl-tel" type="tel" inputmode="numeric"></div>
           <div class="field"><label for="nl-pin">PIN de 6 dígitos</label><input id="nl-pin" type="password" inputmode="numeric" maxlength="6"></div>
+          ${hayDetectadasSinCorregir ? `<p class="text-muted text-sm">⚠️ Algunas torres de la lista todavía no están guardadas en el censo (se detectaron por el apto, marcadas con *). Para que ese líder pueda ver y editar esos hogares, corrige primero sus torres con el botón "Detectar torres faltantes" de esta misma pantalla.</p>` : ''}
           <div class="field">
             <label>Torres asignadas</label>
             <div class="chip-group">${torresDisponibles.map((t) => {
               const [bloque, torre] = t.split('-');
-              return `<button type="button" class="chip" data-torre-chip="${esc(t)}">Bloque ${esc(bloque)} · Torre ${esc(torre)}</button>`;
+              const sinCorregir = !torresReales.has(t);
+              return `<button type="button" class="chip" data-torre-chip="${esc(t)}">Bloque ${esc(bloque)} · Torre ${esc(torre)}${sinCorregir ? ' *' : ''}</button>`;
             }).join('') || '<p class="text-muted text-sm">Todavía no hay torres censadas. Censa al menos un hogar con torre para poder asignarla.</p>'}</div>
           </div>
           <p class="error-text" id="nl-error" role="alert" aria-live="polite"></p>
